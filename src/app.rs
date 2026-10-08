@@ -320,7 +320,7 @@ impl App {
 
     fn open_settings(&mut self, el: &ActiveEventLoop) {
         if let Some(s) = &self.settings {
-            s.window.focus_window();
+            s.focus();
             return;
         }
         let (Some(gpu), Some(m)) = (self.gpu.as_ref(), Self::primary(el)) else { return };
@@ -328,8 +328,10 @@ impl App {
         let (ww, wh) = (500.0, 680.0f64.min(h - 80.0));
         let attrs = ui::attrs_on(&m, (w - ww) / 2.0, (h - wh) / 2.0, ww, wh).with_title("DevLogica Tools – Impostazioni").with_resizable(false);
         self.settings = UiWin::new(el, gpu, attrs, false);
-        if let Some(s) = &self.settings {
-            s.window.focus_window();
+        match &mut self.settings {
+            // disegna subito il primo fotogramma: è lì che la finestra diventa visibile
+            Some(s) => s.next_paint = Instant::now(),
+            None => log("Impossibile aprire la finestra delle impostazioni"),
         }
     }
 
@@ -595,7 +597,7 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         if self.wall.owns(id) {
-            self.wall.window_event(self.gpu.as_ref(), &self.cfg, id, &event);
+            self.wall.window_event(self.gpu.as_ref(), &self.cfg, id, event);
             return;
         }
         let Some(gpu) = self.gpu.as_ref() else { return };

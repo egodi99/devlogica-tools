@@ -17,6 +17,8 @@ use winit::window::{Window, WindowId};
 
 struct Screen {
     target: Target,
+    /// Dimensione dello schermo in pixel fisici: la finestra deve restare esattamente così.
+    size: winit::dpi::PhysicalSize<u32>,
     wallpaper: String,
     offset: [f32; 2],
     canvas: [f32; 2],
@@ -107,6 +109,9 @@ impl Wallpapers {
         self.screens.clear();
         let mons = monitor_list(el);
         self.monitor_sig = signature(&mons);
+        for m in &mons {
+            log(format!("Schermo trovato: {} pos {:?} dim {:?} scala {}", monitor_key(m), m.position(), m.size(), m.scale_factor()));
+        }
         self.monitors = mons
             .iter()
             .map(|m| {
@@ -138,7 +143,7 @@ impl Wallpapers {
         }
 
         let instance = gpu.as_ref().map(|g| g.instance.clone()).unwrap_or_else(render::new_instance);
-        let mut created: Vec<(Arc<Window>, wgpu::Surface<'static>, String, [f32; 2], [f32; 2])> = Vec::new();
+        let mut created: Vec<(Arc<Window>, wgpu::Surface<'static>, String, [f32; 2], [f32; 2], winit::dpi::PhysicalSize<u32>)> = Vec::new();
         for m in &mons {
             let (pos, size) = (m.position(), m.size());
             let Some(window) = create_window(el, m) else { continue };
@@ -162,7 +167,7 @@ impl Wallpapers {
                 Mode::Span => ([(pos.x - x0) as f32, (pos.y - y0) as f32], [(x1 - x0) as f32, (y1 - y0) as f32]),
                 _ => ([0.0, 0.0], [size.width as f32, size.height as f32]),
             };
-            created.push((window, surface, wallpaper, offset, canvas));
+            created.push((window, surface, wallpaper, offset, canvas, size));
         }
 
         if gpu.is_none() {
@@ -177,11 +182,11 @@ impl Wallpapers {
         let g = gpu.as_mut().unwrap();
         let in_use: Vec<String> = created.iter().map(|c| c.2.clone()).collect();
         g.retain_pipelines(&in_use);
-        for (window, surface, wallpaper, offset, canvas) in created {
+        for (window, surface, wallpaper, offset, canvas, size) in created {
             let id = window.id();
-            let scale = cfg.quality.scale(window.inner_size().height);
+            let scale = cfg.quality.scale(size.height);
             let target = g.make_target(window, surface, scale);
-            self.screens.insert(id, Screen { target, wallpaper, offset, canvas, occluded: false });
+            self.screens.insert(id, Screen { target, size, wallpaper, offset, canvas, occluded: false });
         }
         self.changed = Instant::now();
         log(format!("Sfondi: {} schermi, modalità {:?}", self.screens.len(), cfg.mode));
@@ -219,16 +224,26 @@ impl Wallpapers {
         }
     }
 
-    pub fn window_event(&mut self, gpu: Option<&Gpu>, cfg: &Config, id: WindowId, event: &WindowEvent) {
+    pub fn window_event(&mut self, gpu: Option<&Gpu>, cfg: &Config, id: WindowId, event: WindowEvent) {
         let Some(s) = self.screens.get_mut(&id) else { return };
         match event {
-            WindowEvent::Occluded(o) => s.occluded = *o,
+            WindowEvent::Occluded(o) => s.occluded = o,
+            // Schermi con scala diversa (es. portatile al 150% + esterno al 100%): Windows
+            // proporrebbe di ridimensionare la finestra quando cambia schermo. Deve invece
+            // restare grande esattamente quanto lo schermo.
+            WindowEvent::ScaleFactorChanged { mut inner_size_writer, .. } => {
+                let _ = inner_size_writer.request_inner_size(s.size);
+            }
             WindowEvent::Resized(size) => {
                 if let Some(gpu) = gpu {
                     gpu.resize(&mut s.target, size.width, size.height);
                 }
                 if cfg.mode != Mode::Span {
                     s.canvas = [size.width as f32, size.height as f32];
+                }
+                if size != s.size {
+                    log(format!("Sfondo ridimensionato a {}×{} (atteso {}×{}): lo riporto alla misura dello schermo", size.width, size.height, s.size.width, s.size.height));
+                    let _ = s.target.window.request_inner_size(s.size);
                 }
             }
             _ => {}

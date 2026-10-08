@@ -4,7 +4,7 @@
 use crate::config::log;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use windows::core::{w, BOOL, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::Shell::{
     SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
@@ -95,17 +95,27 @@ pub fn attach(window: &Window, pos: PhysicalPosition<i32>, size: PhysicalSize<u3
         let mut pt = POINT { x: pos.x, y: pos.y };
         let _ = ScreenToClient(desk.parent, &mut pt);
         let flags = SWP_NOACTIVATE | SWP_SHOWWINDOW;
-        match desk.raised {
+        let mode = match desk.raised {
             Some((defview, worker)) => {
                 // Subito sotto alle icone…
                 let _ = SetWindowPos(hwnd, Some(defview), pt.x, pt.y, size.width as i32, size.height as i32, flags);
-                // …e sopra alla WorkerW che contiene l'immagine di sfondo statica.
-                let _ = SetWindowPos(worker, Some(hwnd), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                // …e la WorkerW con l'immagine statica in fondo a tutto. Va messa in fondo e non
+                // "sotto a questa finestra": con più schermi finirebbe sopra agli sfondi già creati,
+                // coprendoli, e resterebbe visibile solo l'ultimo.
+                let _ = SetWindowPos(worker, Some(HWND_BOTTOM), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                "Progman (24H2)"
             }
             None => {
                 let _ = SetWindowPos(hwnd, None, pt.x, pt.y, size.width as i32, size.height as i32, flags | SWP_NOZORDER);
+                "WorkerW"
             }
-        }
+        };
+        let mut r = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut r);
+        log(format!(
+            "Sfondo agganciato ({mode}): schermo {}×{} in {},{} → posizione nel desktop {},{}; finestra effettiva {},{} – {},{}",
+            size.width, size.height, pos.x, pos.y, pt.x, pt.y, r.left, r.top, r.right, r.bottom
+        ));
     }
     true
 }

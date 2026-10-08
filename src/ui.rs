@@ -71,6 +71,8 @@ pub struct UiWin {
     renderer: egui_wgpu::Renderer,
     pub next_paint: Instant,
     shown: bool,
+    /// Finestra normale (impostazioni): quando appare va portata in primo piano.
+    focus_on_show: bool,
 }
 
 impl UiWin {
@@ -106,7 +108,7 @@ impl UiWin {
             Some(gpu.device.limits().max_texture_dimension_2d as usize),
         );
         let renderer = egui_wgpu::Renderer::new(&gpu.device, format, egui_wgpu::RendererOptions::default());
-        Some(Self { window, surface, config, ctx, state, renderer, next_paint: Instant::now(), shown: false })
+        Some(Self { window, surface, config, ctx, state, renderer, next_paint: Instant::now(), shown: false, focus_on_show: !overlay })
     }
 
     pub fn on_event(&mut self, gpu: &Gpu, event: &WindowEvent) {
@@ -135,6 +137,17 @@ impl UiWin {
             .min(Duration::from_secs(1));
         self.next_paint = Instant::now() + delay.max(Duration::from_millis(30));
 
+        // La finestra va resa visibile prima di chiedere il fotogramma: su macOS una finestra
+        // nascosta non riceve mai un fotogramma da disegnare, e resterebbe nascosta per sempre.
+        if !self.shown {
+            self.shown = true;
+            self.window.set_visible(true);
+            if self.focus_on_show {
+                // Su macOS porta in primo piano anche l'app (che vive solo nella barra dei menu).
+                self.window.focus_window();
+            }
+            self.next_paint = Instant::now() + Duration::from_millis(16);
+        }
         // Le texture (es. i caratteri) vanno caricate sempre, anche se questo fotogramma
         // non si può disegnare: egui non le rimanda una seconda volta.
         let mut textures = std::mem::take(&mut out.textures_delta);
@@ -154,6 +167,8 @@ impl UiWin {
                 for id in &free {
                     self.renderer.free_texture(id);
                 }
+                // riprova a breve
+                self.next_paint = Instant::now() + Duration::from_millis(50);
                 return;
             }
         };
@@ -187,10 +202,11 @@ impl UiWin {
         for id in &free {
             self.renderer.free_texture(id);
         }
-        if !self.shown {
-            self.shown = true;
-            self.window.set_visible(true);
-        }
+    }
+
+    pub fn focus(&self) {
+        self.window.set_visible(true);
+        self.window.focus_window();
     }
 
     pub fn set_height(&self, h: f64) {

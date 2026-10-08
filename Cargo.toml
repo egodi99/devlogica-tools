@@ -1,6 +1,6 @@
 [package]
 name = "devlogica-tools"
-version = "1.0.0"
+version = "1.0.1"
 # egui 0.36 richiede Rust 1.95 o successivo
 rust-version = "1.95"
 edition = "2021"
