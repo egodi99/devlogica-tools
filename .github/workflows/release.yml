@@ -1,0 +1,83 @@
+# Compila DevLogica Tools per Windows e macOS e pubblica una release su GitHub.
+#
+#   • Push di un tag "v1.2.3"  → build + release con i file da scaricare
+#   • "Run workflow" a mano    → solo build: i file restano tra gli artefatti dell'esecuzione
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Repository usato dall'app per controllare se ci sono aggiornamenti
+  DEVLOGICA_REPO: ${{ github.repository }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Versione dal tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: perl -0pi -e "s/^version = \"[^\"]*\"/version = \"${GITHUB_REF_NAME#v}\"/m" Cargo.toml
+      - name: Test
+        run: cargo test --release
+      - name: Build
+        run: cargo build --release
+      - name: Prepara il file
+        shell: bash
+        run: |
+          mkdir -p out
+          cp target/release/devlogica-tools.exe "out/DevLogica-Tools-Windows.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: out/*
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Versione dal tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: perl -0pi -e "s/^version = \"[^\"]*\"/version = \"${GITHUB_REF_NAME#v}\"/m" Cargo.toml
+      - name: Build app universale (Apple Silicon + Intel)
+        run: ./packaging/macos/build-app.sh universal
+      - name: Prepara il file
+        run: |
+          mkdir -p out
+          ditto -c -k --sequesterRsrc --keepParent "dist/DevLogica Tools.app" "out/DevLogica-Tools-macOS.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: out/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true
+          body: |
+            ## Download
+            - **Windows**: `DevLogica-Tools-Windows.exe`. Al primo avvio SmartScreen: *Ulteriori informazioni* → *Esegui comunque*.
+            - **macOS**: `DevLogica-Tools-macOS.zip` → estrai e sposta l'app in *Applicazioni*. Al primo avvio: *Impostazioni di Sistema → Privacy e sicurezza → Apri comunque*.
