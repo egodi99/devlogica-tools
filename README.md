@@ -62,6 +62,19 @@ Si trovano nel menu → *Sfondi animati*, con queste opzioni:
 - fluidità e risoluzione (le versioni ridotte consumano meno);
 - logo, pausa e sfondi personalizzati (vedi più sotto).
 
+### Indicatori sullo sfondo (solo macOS)
+Ai lati del Dock, dentro lo sfondo animato, l'app mostra **CPU**, **RAM**, **orologio** e **logo DevLogica**.
+Si configurano in **Impostazioni → Indicatori sullo sfondo**:
+- attivi o disattivati (anche dal menu → *Sfondi animati* → *Mostra gli indicatori*);
+- lo stile: *Solo testo*, *Pillole come il Dock* oppure *Orologio grande*;
+- per ogni elemento: *Nascosto*, *Sinistra* o *Destra* del Dock.
+
+Compaiono solo sullo schermo che ha il Dock e si aggiornano ogni 2 secondi. Con gli sfondi disattivati o in pausa non si vedono.
+
+Per sapere quanto è largo il Dock, l'app chiede il permesso **Accessibilità** (*Impostazioni di Sistema → Privacy e sicurezza → Accessibilità*).
+Senza permesso gli indicatori funzionano lo stesso, ma lasciano libera una fascia fissa al centro dello schermo.
+L'app non è firmata con un certificato Apple: dopo un aggiornamento può servire togliere *DevLogica Tools* dall'elenco Accessibilità e aggiungerla di nuovo.
+
 ---
 
 ## Il riconoscimento automatico delle call
@@ -166,6 +179,9 @@ src/ui.rs            finestre egui: avviso call, caffè, conferma, impostazioni,
 src/tray.rs          menu e icona della barra di sistema
 src/wallpaper.rs     sfondi animati per schermo e modalità multimonitor
 src/render.rs        GPU (wgpu): shader degli sfondi e logo
+src/indicators.rs    indicatori sullo sfondo: ordine, spazio accanto al Dock, formati (con test)
+src/overlay.rs       disegno degli indicatori sopra lo sfondo (egui)
+src/sysstats.rs      statistiche CPU e RAM (con test)
 src/sound.rs         suoni generati al volo
 src/update.rs        controllo aggiornamenti dalle release di GitHub
 src/platform/        Windows (desktop, microfono, avvio) e macOS (idem)

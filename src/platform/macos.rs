@@ -545,11 +545,3 @@ pub fn dock_info() -> Option<DockInfo> {
     Some(DockInfo { screen: scr[0].0, dock: None, at_bottom: true })
 }
 
-#[cfg(test)]
-mod prova_dock {
-    #[test]
-    #[ignore]
-    fn stampa_dock() {
-        println!("DOCK trusted={} {:?} schermi {:?}", super::ax_trusted(false), super::dock_info(), super::screens());
-    }
-}
