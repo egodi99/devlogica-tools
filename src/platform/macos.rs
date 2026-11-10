@@ -342,3 +342,214 @@ pub fn local_hm() -> (u32, u32) {
         (tm.tm_hour as u32, tm.tm_min as u32)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Posizione del Dock per gli indicatori: esatta con l'Accessibilità, altrimenti
+// si capisce almeno quale schermo lo ha confrontando `frame` e `visibleFrame`.
+// ---------------------------------------------------------------------------
+
+use crate::indicators::{DockInfo, GRect};
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct CgPoint {
+    x: f64,
+    y: f64,
+}
+
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    static kAXTrustedCheckOptionPrompt: *const c_void;
+    fn AXIsProcessTrustedWithOptions(options: *const c_void) -> u8;
+    fn AXUIElementCreateApplication(pid: i32) -> *const c_void;
+    fn AXUIElementCopyAttributeValue(element: *const c_void, attribute: *const c_void, value: *mut *const c_void) -> i32;
+    fn AXValueGetValue(value: *const c_void, kind: u32, out: *mut c_void) -> u8;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    static kCFBooleanTrue: *const c_void;
+    static kCFTypeDictionaryKeyCallBacks: u8;
+    static kCFTypeDictionaryValueCallBacks: u8;
+    fn CFDictionaryCreate(alloc: *const c_void, keys: *const *const c_void, values: *const *const c_void, n: isize, kcb: *const c_void, vcb: *const c_void) -> *const c_void;
+    fn CFStringCreateWithCString(alloc: *const c_void, s: *const c_char, encoding: u32) -> *const c_void;
+    fn CFArrayGetCount(a: *const c_void) -> isize;
+    fn CFArrayGetValueAtIndex(a: *const c_void, i: isize) -> *const c_void;
+}
+
+const AX_VALUE_CGPOINT: u32 = 1;
+const AX_VALUE_CGSIZE: u32 = 2;
+
+/// Vero se l'app ha il permesso Accessibilità. Con `prompt` macOS mostra la sua richiesta.
+pub fn ax_trusted(prompt: bool) -> bool {
+    unsafe {
+        if !prompt {
+            return AXIsProcessTrustedWithOptions(std::ptr::null()) != 0;
+        }
+        let keys = [kAXTrustedCheckOptionPrompt];
+        let values = [kCFBooleanTrue];
+        let dict = CFDictionaryCreate(
+            std::ptr::null(),
+            keys.as_ptr(),
+            values.as_ptr(),
+            1,
+            &kCFTypeDictionaryKeyCallBacks as *const u8 as *const c_void,
+            &kCFTypeDictionaryValueCallBacks as *const u8 as *const c_void,
+        );
+        let ok = AXIsProcessTrustedWithOptions(dict) != 0;
+        if !dict.is_null() {
+            CFRelease(dict);
+        }
+        ok
+    }
+}
+
+pub fn open_accessibility_settings() {
+    open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
+}
+
+/// Stringa CoreFoundation da rilasciare con CFRelease.
+fn cfstr(s: &std::ffi::CStr) -> *const c_void {
+    unsafe { CFStringCreateWithCString(std::ptr::null(), s.as_ptr(), UTF8) }
+}
+
+/// Valore di un attributo AX (da rilasciare con CFRelease), o null.
+fn ax_attr(el: *const c_void, name: &std::ffi::CStr) -> *const c_void {
+    let attr = cfstr(name);
+    let mut out: *const c_void = std::ptr::null();
+    let st = unsafe { AXUIElementCopyAttributeValue(el, attr, &mut out) };
+    unsafe { CFRelease(attr) };
+    if st == 0 { out } else { std::ptr::null() }
+}
+
+fn cf_to_string(s: *const c_void) -> Option<String> {
+    let mut buf = [0 as c_char; 128];
+    let ok = unsafe { CFStringGetCString(s, buf.as_mut_ptr(), buf.len() as isize, UTF8) } != 0;
+    ok.then(|| buf.iter().take_while(|&&c| c != 0).map(|&c| c as u8 as char).collect())
+}
+
+fn dock_pid() -> Option<i32> {
+    unsafe {
+        let cls = objc2::runtime::AnyClass::get(c"NSRunningApplication")?;
+        let bundle = cfstr(c"com.apple.dock");
+        let arr: *mut AnyObject = msg_send![cls, runningApplicationsWithBundleIdentifier: bundle as *const AnyObject];
+        CFRelease(bundle);
+        let arr = arr.as_ref()?;
+        let n: usize = msg_send![arr, count];
+        if n == 0 {
+            return None;
+        }
+        let app: *mut AnyObject = msg_send![arr, objectAtIndex: 0usize];
+        let pid: i32 = msg_send![app.as_ref()?, processIdentifier];
+        Some(pid)
+    }
+}
+
+/// Rettangolo della barra del Dock (l'elemento AXList dell'app Dock), in punti globali.
+fn dock_rect_ax() -> Option<GRect> {
+    let pid = dock_pid()?;
+    unsafe {
+        let app = AXUIElementCreateApplication(pid);
+        if app.is_null() {
+            return None;
+        }
+        let children = ax_attr(app, c"AXChildren");
+        let mut found = None;
+        if !children.is_null() {
+            for i in 0..CFArrayGetCount(children) {
+                let el = CFArrayGetValueAtIndex(children, i);
+                let role = ax_attr(el, c"AXRole");
+                let is_list = !role.is_null() && cf_to_string(role).as_deref() == Some("AXList");
+                if !role.is_null() {
+                    CFRelease(role);
+                }
+                if !is_list {
+                    continue;
+                }
+                let pos = ax_attr(el, c"AXPosition");
+                let size = ax_attr(el, c"AXSize");
+                let (mut p, mut s) = (CgPoint::default(), CgPoint::default());
+                let ok = !pos.is_null()
+                    && !size.is_null()
+                    && AXValueGetValue(pos, AX_VALUE_CGPOINT, &mut p as *mut _ as *mut c_void) != 0
+                    && AXValueGetValue(size, AX_VALUE_CGSIZE, &mut s as *mut _ as *mut c_void) != 0;
+                for v in [pos, size] {
+                    if !v.is_null() {
+                        CFRelease(v);
+                    }
+                }
+                if ok && s.x > 0.0 && s.y > 0.0 {
+                    found = Some(GRect { x: p.x, y: p.y, w: s.x, h: s.y });
+                }
+                break;
+            }
+            CFRelease(children);
+        }
+        CFRelease(app);
+        found
+    }
+}
+
+/// Schermi come (frame, visibleFrame) convertiti in punti globali con origine in alto a sinistra.
+fn screens() -> Vec<(GRect, GRect)> {
+    unsafe {
+        let Some(cls) = objc2::runtime::AnyClass::get(c"NSScreen") else { return Vec::new() };
+        let arr: *mut AnyObject = msg_send![cls, screens];
+        let Some(arr) = arr.as_ref() else { return Vec::new() };
+        let n: usize = msg_send![arr, count];
+        let mut raw = Vec::new();
+        for i in 0..n {
+            let s: *mut AnyObject = msg_send![arr, objectAtIndex: i];
+            let Some(s) = s.as_ref() else { continue };
+            let f: NSRect = msg_send![s, frame];
+            let v: NSRect = msg_send![s, visibleFrame];
+            raw.push((f, v));
+        }
+        // Le coordinate AppKit partono dal basso dello schermo principale (il primo).
+        let main_h = raw.first().map(|(f, _)| f.size.height).unwrap_or(0.0);
+        let flip = |r: NSRect| GRect { x: r.origin.x, y: main_h - (r.origin.y + r.size.height), w: r.size.width, h: r.size.height };
+        raw.into_iter().map(|(f, v)| (flip(f), flip(v))).collect()
+    }
+}
+
+fn contains(r: &GRect, x: f64, y: f64) -> bool {
+    x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
+}
+
+/// Schermo con il Dock e, se il permesso c'è e il Dock è visibile, il suo rettangolo.
+pub fn dock_info() -> Option<DockInfo> {
+    let scr = screens();
+    if scr.is_empty() {
+        return None;
+    }
+    if ax_trusted(false) {
+        if let Some(d) = dock_rect_ax() {
+            let (cx, cy) = (d.x + d.w / 2.0, d.y + d.h / 2.0);
+            if let Some((frame, _)) = scr.iter().find(|(f, _)| contains(f, cx, cy)) {
+                // Dock nascosto automaticamente: la barra sta fuori dallo schermo.
+                let hidden = d.y + 2.0 >= frame.y + frame.h;
+                return Some(DockInfo { screen: *frame, dock: (!hidden).then_some(d), at_bottom: d.w > d.h });
+            }
+        }
+    }
+    // Senza Accessibilità: lo schermo la cui area utile non arriva fino in fondo (o ai lati).
+    for (f, v) in &scr {
+        let bottom_gap = (f.y + f.h) - (v.y + v.h);
+        if bottom_gap > 1.0 {
+            return Some(DockInfo { screen: *f, dock: None, at_bottom: true });
+        }
+        if v.w + 1.0 < f.w {
+            return Some(DockInfo { screen: *f, dock: None, at_bottom: false });
+        }
+    }
+    Some(DockInfo { screen: scr[0].0, dock: None, at_bottom: true })
+}
+
+#[cfg(test)]
+mod prova_dock {
+    #[test]
+    #[ignore]
+    fn stampa_dock() {
+        println!("DOCK trusted={} {:?} schermi {:?}", super::ax_trusted(false), super::dock_info(), super::screens());
+    }
+}

@@ -40,6 +40,9 @@ mod no_stats {
     pub fn vm_pages() -> Option<(u64, u64, u64, u64, u64)> { None }
     pub fn mem_total() -> Option<u64> { None }
     pub fn local_hm() -> (u32, u32) { (0, 0) }
+    pub fn ax_trusted(_prompt: bool) -> bool { false }
+    pub fn dock_info() -> Option<crate::indicators::DockInfo> { None }
+    pub fn open_accessibility_settings() {}
 }
 #[cfg(not(target_os = "macos"))]
 #[allow(unused_imports)]

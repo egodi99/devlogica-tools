@@ -58,6 +58,33 @@ pub enum DockPlace {
     Unknown,
 }
 
+/// Rettangolo in punti globali, con l'origine in alto a sinistra dello schermo principale
+/// (le stesse coordinate dell'Accessibilità di macOS e di winit in punti logici).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GRect {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+/// Schermo che ha il Dock e, se noto, il rettangolo del Dock.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DockInfo {
+    pub screen: GRect,
+    pub dock: Option<GRect>,
+    pub at_bottom: bool,
+}
+
+/// Converte il rettangolo del Dock in coordinate locali dello schermo.
+pub fn dock_place(screen: GRect, dock: Option<GRect>, at_bottom: bool) -> DockPlace {
+    match dock {
+        None => DockPlace::Unknown,
+        Some(_) if !at_bottom => DockPlace::Side,
+        Some(d) => DockPlace::Bottom { x0: (d.x - screen.x) as f32, x1: (d.x + d.w - screen.x) as f32, top: (d.y - screen.y) as f32 },
+    }
+}
+
 /// Larghezza utile a sinistra e a destra del Dock, già al netto dei margini.
 pub fn free_widths(screen_w: f32, dock: DockPlace) -> (f32, f32) {
     let (l, r) = match dock {
@@ -183,5 +210,29 @@ mod tests {
         assert_eq!(fmt_cpu(140.0), "CPU 100%");
         assert_eq!(fmt_ram(12_025_908_428, 17_179_869_184), "RAM 11,2 / 16 GB");
         assert_eq!(fmt_clock(9, 5), "09:05");
+    }
+
+    fn r(x: f64, y: f64, w: f64, h: f64) -> GRect {
+        GRect { x, y, w, h }
+    }
+
+    #[test]
+    fn dock_place_in_basso() {
+        assert_eq!(dock_place(r(0., 0., 1512., 982.), Some(r(400., 920., 712., 58.)), true), DockPlace::Bottom { x0: 400.0, x1: 1112.0, top: 920.0 });
+    }
+
+    #[test]
+    fn dock_place_secondo_schermo() {
+        assert_eq!(dock_place(r(1512., 0., 1920., 1080.), Some(r(2000., 1010., 800., 64.)), true), DockPlace::Bottom { x0: 488.0, x1: 1288.0, top: 1010.0 });
+    }
+
+    #[test]
+    fn dock_place_none() {
+        assert_eq!(dock_place(r(0., 0., 1512., 982.), None, true), DockPlace::Unknown);
+    }
+
+    #[test]
+    fn dock_place_laterale() {
+        assert_eq!(dock_place(r(0., 0., 1512., 982.), Some(r(0., 200., 64., 500.)), false), DockPlace::Side);
     }
 }
