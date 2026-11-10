@@ -7,6 +7,7 @@ mod app;
 mod config;
 mod detect;
 mod indicators;
+mod install;
 mod net;
 mod office;
 mod overlay;
@@ -32,11 +33,26 @@ fn main() {
         std::process::exit(snapshot::run_ui(&args[2..]));
     }
 
-    // Una sola copia in esecuzione: la seconda si chiude subito.
-    let Ok(_guard) = std::net::TcpListener::bind(("127.0.0.1", 47_824)) else {
+    // Una sola copia in esecuzione: la seconda si chiude subito. Dopo un aggiornamento invece
+    // si aspetta (fino a 30 s) che la versione precedente si chiuda e liberi la porta.
+    let after_update = args.iter().any(|a| a == "--dopo-aggiornamento");
+    let bind = || std::net::TcpListener::bind(("127.0.0.1", 47_824));
+    let mut lock = bind();
+    if after_update {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while lock.is_err() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            lock = bind();
+        }
+    }
+    let Ok(_guard) = lock else {
         config::log("DevLogica Tools è già in esecuzione");
         return;
     };
+    if after_update {
+        config::log(format!("Aggiornato alla versione {}", env!("CARGO_PKG_VERSION")));
+    }
+    install::cleanup();
 
     let mut builder = EventLoop::<app::UserEvent>::with_user_event();
     #[cfg(target_os = "macos")]
