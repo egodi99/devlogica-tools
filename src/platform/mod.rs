@@ -32,6 +32,19 @@ mod other {
 #[cfg(not(any(windows, target_os = "macos")))]
 pub use other::*;
 
+// Statistiche per gli indicatori: esistono solo su macOS.
+#[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
+mod no_stats {
+    pub fn cpu_ticks() -> Option<[u64; 4]> { None }
+    pub fn vm_pages() -> Option<(u64, u64, u64, u64, u64)> { None }
+    pub fn mem_total() -> Option<u64> { None }
+    pub fn local_hm() -> (u32, u32) { (0, 0) }
+}
+#[cfg(not(target_os = "macos"))]
+#[allow(unused_imports)]
+pub use no_stats::*;
+
 /// Apre una cartella nel file manager del sistema.
 pub fn open_folder(path: &std::path::Path) {
     let _ = std::fs::create_dir_all(path);

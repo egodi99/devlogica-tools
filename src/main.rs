@@ -13,6 +13,7 @@ mod platform;
 mod render;
 mod snapshot;
 mod sound;
+mod sysstats;
 mod tray;
 mod ui;
 mod update;

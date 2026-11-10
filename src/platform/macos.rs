@@ -241,3 +241,104 @@ pub fn make_overlay(window: &Window) {
 pub fn open_url(url: &str) {
     let _ = std::process::Command::new("open").arg(url).spawn();
 }
+
+// ---------------------------------------------------------------------------
+// Statistiche per gli indicatori: CPU, RAM (Mach / sysctl) e ora locale.
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Default)]
+struct VmStatistics64 {
+    free_count: u32,
+    active_count: u32,
+    inactive_count: u32,
+    wire_count: u32,
+    zero_fill_count: u64,
+    reactivations: u64,
+    pageins: u64,
+    pageouts: u64,
+    faults: u64,
+    cow_faults: u64,
+    lookups: u64,
+    hits: u64,
+    purges: u64,
+    purgeable_count: u32,
+    speculative_count: u32,
+    decompressions: u64,
+    compressions: u64,
+    swapins: u64,
+    swapouts: u64,
+    compressor_page_count: u32,
+    throttled_count: u32,
+    external_page_count: u32,
+    internal_page_count: u32,
+    total_uncompressed_pages_in_compressor: u64,
+}
+
+#[repr(C)]
+struct Tm {
+    tm_sec: i32,
+    tm_min: i32,
+    tm_hour: i32,
+    tm_mday: i32,
+    tm_mon: i32,
+    tm_year: i32,
+    tm_wday: i32,
+    tm_yday: i32,
+    tm_isdst: i32,
+    tm_gmtoff: i64,
+    tm_zone: *const c_char,
+}
+
+unsafe extern "C" {
+    fn mach_host_self() -> u32;
+    fn host_statistics(host: u32, flavor: i32, info: *mut i32, count: *mut u32) -> i32;
+    fn host_statistics64(host: u32, flavor: i32, info: *mut i32, count: *mut u32) -> i32;
+    fn host_page_size(host: u32, size: *mut usize) -> i32;
+    fn sysctlbyname(name: *const c_char, old: *mut c_void, oldlen: *mut usize, new: *const c_void, newlen: usize) -> i32;
+    fn time(t: *mut i64) -> i64;
+    fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
+}
+
+const HOST_CPU_LOAD_INFO: i32 = 3;
+const HOST_VM_INFO64: i32 = 4;
+
+/// Tick complessivi della CPU: [user, system, idle, nice].
+pub fn cpu_ticks() -> Option<[u64; 4]> {
+    let mut t = [0u32; 4];
+    let mut count = 4u32;
+    let st = unsafe { host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, t.as_mut_ptr() as *mut i32, &mut count) };
+    (st == 0).then(|| t.map(|v| v as u64))
+}
+
+/// (internal, purgeable, wired, compressor, dimensione pagina)
+pub fn vm_pages() -> Option<(u64, u64, u64, u64, u64)> {
+    let mut vm = VmStatistics64::default();
+    let mut count = (std::mem::size_of::<VmStatistics64>() / 4) as u32;
+    let host = unsafe { mach_host_self() };
+    let st = unsafe { host_statistics64(host, HOST_VM_INFO64, &mut vm as *mut _ as *mut i32, &mut count) };
+    let mut page = 0usize;
+    if st != 0 || unsafe { host_page_size(host, &mut page) } != 0 {
+        return None;
+    }
+    Some((vm.internal_page_count as u64, vm.purgeable_count as u64, vm.wire_count as u64, vm.compressor_page_count as u64, page as u64))
+}
+
+pub fn mem_total() -> Option<u64> {
+    let mut v = 0u64;
+    let mut len = std::mem::size_of::<u64>();
+    let st = unsafe { sysctlbyname(c"hw.memsize".as_ptr(), &mut v as *mut u64 as *mut c_void, &mut len, std::ptr::null(), 0) };
+    (st == 0).then_some(v)
+}
+
+/// Ora e minuti locali.
+pub fn local_hm() -> (u32, u32) {
+    unsafe {
+        let now = time(std::ptr::null_mut());
+        let mut tm: Tm = std::mem::zeroed();
+        if localtime_r(&now, &mut tm).is_null() {
+            return (0, 0);
+        }
+        (tm.tm_hour as u32, tm.tm_min as u32)
+    }
+}
