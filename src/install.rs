@@ -122,7 +122,10 @@ fn prepare(asset: &Asset, _tag: &str, new: &Path, progress: &impl Fn(Phase)) -> 
 
 fn relaunch(target: &Path) -> std::io::Result<()> {
     if cfg!(target_os = "macos") {
-        Command::new("open").arg("-n").arg(target).args(["--args", "--dopo-aggiornamento"]).spawn().map(|_| ())
+        // `open` (senza -W) torna appena LaunchServices ha avviato l'app: se ne aspetta l'esito,
+        // così un errore riporta alla versione in uso invece di lasciare l'utente senza app.
+        let st = Command::new("open").arg("-n").arg(target).args(["--args", "--dopo-aggiornamento"]).status()?;
+        if st.success() { Ok(()) } else { Err(std::io::Error::other(format!("open: {st}"))) }
     } else {
         let mut c = command(target);
         c.arg("--dopo-aggiornamento");
@@ -133,6 +136,33 @@ fn relaunch(target: &Path) -> std::io::Result<()> {
         }
         c.spawn().map(|_| ())
     }
+}
+
+/// Mette `new` al posto di `target` e avvia la versione nuova con `relaunch`. La copia in uso
+/// si rinomina in "<nome>.vecchia" (consentito anche mentre è aperta). Se qualcosa non va,
+/// tutto torna com'era e `new` viene cancellato.
+pub fn swap(target: &Path, new: &Path, relaunch: impl FnOnce(&Path) -> std::io::Result<()>) -> Result<(), String> {
+    let (old, _) = swap_paths(target);
+    remove_all(&old);
+    if let Err(e) = std::fs::rename(target, &old) {
+        remove_all(new);
+        log(format!("Rinomina della versione in uso non riuscita: {e}"));
+        return Err("la cartella dell'app non è scrivibile".into());
+    }
+    if let Err(e) = std::fs::rename(new, target) {
+        let _ = std::fs::rename(&old, target);
+        remove_all(new);
+        log(format!("Scambio non riuscito: {e}"));
+        return Err("sostituzione non riuscita".into());
+    }
+    if let Err(e) = relaunch(target) {
+        let _ = std::fs::rename(target, new);
+        let _ = std::fs::rename(&old, target);
+        remove_all(new);
+        log(format!("Avvio della versione nuova non riuscito: {e}"));
+        return Err("avvio della versione nuova non riuscito".into());
+    }
+    Ok(())
 }
 
 /// Scarica, verifica, sostituisce e avvia la versione nuova. `Ok` = l'app in uso deve chiudersi.
@@ -149,25 +179,9 @@ pub fn install(asset: &Asset, tag: &str, progress: impl Fn(Phase)) -> Result<(),
         log(format!("Aggiornamento non riuscito: {e}"));
         return Err(e);
     }
-    // scambio: la copia in uso si rinomina (consentito anche mentre è aperta), la nuova prende il suo posto
-    if let Err(e) = std::fs::rename(&target, &old) {
-        remove_all(&new);
-        log(format!("Aggiornamento non riuscito, cartella non scrivibile: {e}"));
-        return Err("la cartella dell'app non è scrivibile".into());
-    }
-    if let Err(e) = std::fs::rename(&new, &target) {
-        let _ = std::fs::rename(&old, &target);
-        remove_all(&new);
-        log(format!("Aggiornamento non riuscito durante lo scambio: {e}"));
-        return Err("sostituzione non riuscita".into());
-    }
-    if let Err(e) = relaunch(&target) {
-        // si torna alla versione in uso
-        let _ = std::fs::rename(&target, &new);
-        let _ = std::fs::rename(&old, &target);
-        remove_all(&new);
-        log(format!("Avvio della versione nuova non riuscito: {e}"));
-        return Err("avvio della versione nuova non riuscito".into());
+    if let Err(e) = swap(&target, &new, relaunch) {
+        log(format!("Aggiornamento non riuscito: {e}"));
+        return Err(e);
     }
     log(format!("Versione {tag} installata, riavvio"));
     Ok(())
@@ -220,5 +234,55 @@ mod tests {
         assert!(!size_ok(&dir.join("manca"), 10));
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
 
+    fn dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("dlt-swap-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn scambio_riuscito() {
+        let d = dir("ok");
+        let target = d.join("DT.exe");
+        let (old, new) = swap_paths(&target);
+        std::fs::write(&target, "vecchia").unwrap();
+        std::fs::write(&new, "nuova").unwrap();
+        let mut launched = None;
+        assert_eq!(swap(&target, &new, |p| { launched = Some(p.to_path_buf()); Ok(()) }), Ok(()));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "nuova");
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), "vecchia");
+        assert_eq!(launched, Some(target.clone()));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn scambio_riavvio_fallito_ripristina() {
+        let d = dir("ko");
+        let target = d.join("DT.exe");
+        let (old, new) = swap_paths(&target);
+        std::fs::write(&target, "vecchia").unwrap();
+        std::fs::write(&new, "nuova").unwrap();
+        let r = swap(&target, &new, |_| Err(std::io::Error::other("open fallito")));
+        assert!(r.is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "vecchia");
+        assert!(!old.exists());
+        assert!(!new.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn scambio_con_vecchia_rimasta() {
+        let d = dir("resto");
+        let target = d.join("App.app");
+        let (old, new) = swap_paths(&target);
+        std::fs::create_dir_all(target.join("Contents")).unwrap();
+        std::fs::create_dir_all(new.join("Contents")).unwrap();
+        std::fs::write(new.join("Contents/v"), "nuova").unwrap();
+        std::fs::create_dir_all(&old).unwrap(); // resto di un aggiornamento precedente
+        assert_eq!(swap(&target, &new, |_| Ok(())), Ok(()));
+        assert_eq!(std::fs::read_to_string(target.join("Contents/v")).unwrap(), "nuova");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
