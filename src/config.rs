@@ -94,11 +94,28 @@ pub struct Indicators {
     pub clock: Side,
     pub ram: Side,
     pub cpu: Side,
+    /// Dimensione dei testi (CPU, RAM, orologio): 1 = come nella 1.0.3.
+    pub text_scale: f32,
+    /// Dimensione del logo nell'angolo.
+    pub logo_scale: f32,
 }
 
 impl Default for Indicators {
     fn default() -> Self {
-        Self { enabled: true, style: IndicatorStyle::Text, logo: Side::Left, clock: Side::Left, ram: Side::Right, cpu: Side::Right }
+        Self { enabled: true, style: IndicatorStyle::Text, logo: Side::Left, clock: Side::Left, ram: Side::Right, cpu: Side::Right, text_scale: 1.0, logo_scale: 1.0 }
+    }
+}
+
+fn clamp_scale(v: f32) -> f32 {
+    if v.is_finite() { v.clamp(0.75, 2.0) } else { 1.0 }
+}
+
+impl Indicators {
+    pub fn text_k(&self) -> f32 {
+        clamp_scale(self.text_scale)
+    }
+    pub fn logo_k(&self) -> f32 {
+        clamp_scale(self.logo_scale)
     }
 }
 
@@ -250,7 +267,7 @@ mod tests {
     fn indicatori_default() {
         assert_eq!(
             Config::default().indicators,
-            Indicators { enabled: true, style: IndicatorStyle::Text, logo: Side::Left, clock: Side::Left, ram: Side::Right, cpu: Side::Right }
+            Indicators { enabled: true, style: IndicatorStyle::Text, logo: Side::Left, clock: Side::Left, ram: Side::Right, cpu: Side::Right, text_scale: 1.0, logo_scale: 1.0 }
         );
     }
 
@@ -267,5 +284,22 @@ mod tests {
         let c: Config = serde_json::from_str(r#"{"indicators":{"cpu":"hidden"}}"#).unwrap();
         assert_eq!(c.indicators.cpu, Side::Hidden);
         assert_eq!(Indicators { cpu: Side::Right, ..c.indicators }, Indicators::default());
+    }
+
+    #[test]
+    fn scale_default_e_vecchio_config() {
+        let c: Config = serde_json::from_str(r#"{"indicators":{"cpu":"hidden"}}"#).unwrap();
+        assert_eq!(c.indicators.text_scale, 1.0);
+        assert_eq!(c.indicators.logo_scale, 1.0);
+    }
+
+    #[test]
+    fn scale_limitate() {
+        let k = |t: f32| Indicators { text_scale: t, logo_scale: t, ..Default::default() };
+        assert_eq!(k(5.0).text_k(), 2.0);
+        assert_eq!(k(0.1).text_k(), 0.75);
+        assert_eq!(k(f32::NAN).text_k(), 1.0);
+        assert_eq!(k(1.5).logo_k(), 1.5);
+        assert_eq!(k(f32::NAN).logo_k(), 1.0);
     }
 }

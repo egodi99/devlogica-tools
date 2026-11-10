@@ -27,11 +27,11 @@ pub struct Overlay {
 const LOGO_H: f32 = 18.0;
 const PILL_PAD: Vec2 = Vec2::new(10.0, 5.0);
 
-/// Logo ridotto una volta sola (egui-wgpu non crea mipmap): tre volte l'altezza disegnata,
-/// così resta nitido sia sugli schermi Retina sia su quelli normali.
+/// Logo ridotto una volta sola (egui-wgpu non crea mipmap): sei volte l'altezza di base,
+/// così resta nitido anche al 200% sugli schermi Retina.
 fn logo_image() -> image::RgbaImage {
     let img = image::load_from_memory(include_bytes!("../assets/logo.png")).expect("logo").to_rgba8();
-    let h = (LOGO_H * 3.0) as u32;
+    let h = (LOGO_H * 6.0) as u32;
     let w = (img.width() as f32 * h as f32 / img.height() as f32).round() as u32;
     image::imageops::resize(&img, w, h, image::imageops::FilterType::Lanczos3)
 }
@@ -128,6 +128,7 @@ fn label_value(item: Item, f: &Frame) -> (&'static str, String) {
 
 fn prepare(ui: &egui::Ui, block: &Block, f: &Frame) -> Piece {
     let op = f.opacity;
+    let tk = f.ind.text_k();
     match block {
         Block::Single(Item::Logo) => Piece::Logo,
         Block::Single(item) => {
@@ -136,24 +137,24 @@ fn prepare(ui: &egui::Ui, block: &Block, f: &Frame) -> Piece {
             let g = match f.ind.style {
                 IndicatorStyle::Text => {
                     if big_clock {
-                        labeled(ui, "", &value, 20.0, 0.9, op)
+                        labeled(ui, "", &value, 20.0 * tk, 0.9, op)
                     } else {
-                        labeled(ui, label, &value, 12.0, 0.75, op)
+                        labeled(ui, label, &value, 12.0 * tk, 0.75, op)
                     }
                 }
-                IndicatorStyle::Pills => labeled(ui, label, &value, 12.0, 0.95, op),
-                IndicatorStyle::BigClock => labeled(ui, label, &value, 11.0, 0.7, op),
+                IndicatorStyle::Pills => labeled(ui, label, &value, 12.0 * tk, 0.95, op),
+                IndicatorStyle::BigClock => labeled(ui, label, &value, 11.0 * tk, 0.7, op),
             };
             Piece::Text(g)
         }
         Block::ClockStack(rows) => {
             let (_, value) = label_value(Item::Clock, f);
-            let clock = labeled(ui, "", &value, 30.0, 0.95, op);
+            let clock = labeled(ui, "", &value, 30.0 * tk, 0.95, op);
             let rows = rows
                 .iter()
                 .map(|i| {
                     let (l, v) = label_value(*i, f);
-                    labeled(ui, l, &v, 11.0, 0.7, op)
+                    labeled(ui, l, &v, 11.0 * tk, 0.7, op)
                 })
                 .collect();
             Piece::Stack { clock, rows }
@@ -161,17 +162,18 @@ fn prepare(ui: &egui::Ui, block: &Block, f: &Frame) -> Piece {
     }
 }
 
-fn piece_size(p: &Piece, logo: Vec2, pills: bool) -> Vec2 {
+fn piece_size(p: &Piece, logo: Vec2, pills: bool, ind: &Indicators) -> Vec2 {
+    let (tk, lh) = (ind.text_k(), LOGO_H * ind.logo_k());
     let s = match p {
-        Piece::Logo => Vec2::new(LOGO_H * logo.x / logo.y.max(1.0), LOGO_H),
+        Piece::Logo => Vec2::new(lh * logo.x / logo.y.max(1.0), lh),
         Piece::Text(g) => g.size(),
         Piece::Stack { clock, rows } => {
             let w = rows.iter().map(|r| r.size().x).fold(clock.size().x, f32::max);
-            let h = clock.size().y + rows.iter().map(|r| r.size().y + 1.0).sum::<f32>();
+            let h = clock.size().y + rows.iter().map(|r| r.size().y + tk).sum::<f32>();
             Vec2::new(w, h)
         }
     };
-    if pills { s + PILL_PAD * 2.0 } else { s }
+    if pills { s + PILL_PAD * 2.0 * tk } else { s }
 }
 
 fn paint(ui: &mut egui::Ui, screen: Vec2, logo: (egui::TextureId, Vec2), f: &Frame) {
@@ -181,7 +183,7 @@ fn paint(ui: &mut egui::Ui, screen: Vec2, logo: (egui::TextureId, Vec2), f: &Fra
     let painter = ui.painter().clone();
     for (side, free) in [(Side::Left, free_l), (Side::Right, free_r)] {
         let pieces: Vec<Piece> = indicators::blocks(f.ind, side).iter().map(|b| prepare(ui, b, f)).collect();
-        let sizes: Vec<Vec2> = pieces.iter().map(|p| piece_size(p, logo.1, pills)).collect();
+        let sizes: Vec<Vec2> = pieces.iter().map(|p| piece_size(p, logo.1, pills, f.ind)).collect();
         let n = indicators::fit(&sizes.iter().map(|s| s.x).collect::<Vec<_>>(), free, gap);
         if n == 0 {
             continue;
@@ -192,16 +194,17 @@ fn paint(ui: &mut egui::Ui, screen: Vec2, logo: (egui::TextureId, Vec2), f: &Fra
         for (p, s) in pieces.iter().zip(&sizes).take(n) {
             let x0 = if side == Side::Left { x } else { x - s.x };
             let rect = Rect::from_min_size(Pos2::new(x0, cy - s.y / 2.0), *s);
-            draw_piece(&painter, p, rect, side, logo.0, pills, f.opacity);
+            draw_piece(&painter, p, rect, side, logo.0, pills, f.opacity, f.ind.text_k());
             x = if side == Side::Left { x + s.x + gap } else { x - s.x - gap };
         }
     }
 }
 
-fn draw_piece(painter: &egui::Painter, p: &Piece, rect: Rect, side: Side, logo: egui::TextureId, pills: bool, op: f32) {
+#[allow(clippy::too_many_arguments)]
+fn draw_piece(painter: &egui::Painter, p: &Piece, rect: Rect, side: Side, logo: egui::TextureId, pills: bool, op: f32, tk: f32) {
     let inner = if pills {
-        painter.rect(rect, 10.0, white(0.10, op), Stroke::new(1.0, white(0.16, op)), egui::StrokeKind::Inside);
-        rect.shrink2(PILL_PAD)
+        painter.rect(rect, 10.0 * tk, white(0.10, op), Stroke::new(1.0, white(0.16, op)), egui::StrokeKind::Inside);
+        rect.shrink2(PILL_PAD * tk)
     } else {
         rect
     };
@@ -218,7 +221,7 @@ fn draw_piece(painter: &egui::Painter, p: &Piece, rect: Rect, side: Side, logo: 
             painter.galley(Pos2::new(at(clock.size().x), y), clock.clone(), Color32::WHITE);
             y += clock.size().y;
             for r in rows {
-                y += 1.0;
+                y += tk;
                 painter.galley(Pos2::new(at(r.size().x), y), r.clone(), Color32::WHITE);
                 y += r.size().y;
             }
@@ -231,7 +234,7 @@ mod tests {
     #[test]
     fn logo_ridotto_una_volta() {
         let img = super::logo_image();
-        assert_eq!(img.height(), (super::LOGO_H * 3.0) as u32);
+        assert_eq!(img.height(), (super::LOGO_H * 6.0) as u32); // nitido fino al 200% su Retina
         assert!(img.width() > img.height() * 3);
     }
 }

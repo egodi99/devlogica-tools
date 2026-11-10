@@ -498,6 +498,19 @@ fn indicators_section(ui: &mut egui::Ui, v: &mut View) {
                 ui.end_row();
             }
         });
+        let pct = |v: f64, _: std::ops::RangeInclusive<usize>| format!("{:.0}%", v * 100.0);
+        ui.horizontal(|ui| {
+            ui.label("Dimensione dei testi");
+            ui.add(egui::Slider::new(&mut ind.text_scale, 0.75..=2.0).step_by(0.05).custom_formatter(pct));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Dimensione del logo");
+            ui.add(egui::Slider::new(&mut ind.logo_scale, 0.75..=2.0).step_by(0.05).custom_formatter(pct));
+        });
+        if ui.small_button("Ripristina").clicked() {
+            ind.text_scale = 1.0;
+            ind.logo_scale = 1.0;
+        }
         if v.ax_trusted {
             ui.label(RichText::new("Posizione esatta del Dock: consentita").color(TEXT));
         } else {

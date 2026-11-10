@@ -39,7 +39,7 @@ pub fn run_ui(args: &[String]) -> i32 {
         "call" => (540.0, ui::call_panel_height(3), ui::RED_BG),
         "caffe" => (420.0, ui::coffee_panel_height(2), ui::COFFEE_BG),
         "conferma" => (380.0, 140.0, ui::INK),
-        _ => (500.0, 680.0, ui::INK),
+        _ => (500.0, 900.0, ui::INK),
     };
     let (pw, ph) = ((w * ppp as f64) as u32, (h * ppp as f64) as u32);
     let px = ui::render_preview(&gpu, pw, ph, ppp, bg, |u| match kind.as_str() {
@@ -59,7 +59,7 @@ pub fn run_ui(args: &[String]) -> i32 {
 
 pub fn run(args: &[String]) -> i32 {
     if args.len() < 5 {
-        eprintln!("uso: --snapshot <sfondo> <larghezza> <altezza> <secondi> <file.png> [--no-logo] [--scale s] [--indicatori text|pills|big_clock]");
+        eprintln!("uso: --snapshot <sfondo> <larghezza> <altezza> <secondi> <file.png> [--no-logo] [--scale s] [--indicatori text|pills|big_clock] [--testo k] [--logo k]");
         eprintln!("sfondi: {}", wallpapers::catalog().iter().map(|w| w.id.clone()).collect::<Vec<_>>().join(", "));
         return 2;
     }
@@ -101,7 +101,13 @@ pub fn run(args: &[String]) -> i32 {
         "big_clock" => crate::config::IndicatorStyle::BigClock,
         _ => crate::config::IndicatorStyle::Text,
     });
-    let ind = crate::config::Indicators { style: style.unwrap_or(crate::config::IndicatorStyle::Text), ..Default::default() };
+    let num = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).and_then(|s| s.parse::<f32>().ok());
+    let ind = crate::config::Indicators {
+        style: style.unwrap_or(crate::config::IndicatorStyle::Text),
+        text_scale: num("--testo").unwrap_or(1.0),
+        logo_scale: num("--logo").unwrap_or(1.0),
+        ..Default::default()
+    };
     let mut overlay = style.map(|_| crate::overlay::Overlay::new(&gpu, gpu.format));
     let ppp = 2.0 * params.scale;
     let (sw, sh) = (width as f32 / 2.0, height as f32 / 2.0);
