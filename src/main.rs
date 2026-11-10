@@ -9,6 +9,7 @@ mod detect;
 mod indicators;
 mod net;
 mod office;
+mod overlay;
 mod platform;
 mod render;
 mod snapshot;

@@ -59,7 +59,7 @@ pub fn run_ui(args: &[String]) -> i32 {
 
 pub fn run(args: &[String]) -> i32 {
     if args.len() < 5 {
-        eprintln!("uso: --snapshot <sfondo> <larghezza> <altezza> <secondi> <file.png> [--no-logo]");
+        eprintln!("uso: --snapshot <sfondo> <larghezza> <altezza> <secondi> <file.png> [--no-logo] [--scale s] [--indicatori text|pills|big_clock]");
         eprintln!("sfondi: {}", wallpapers::catalog().iter().map(|w| w.id.clone()).collect::<Vec<_>>().join(", "));
         return 2;
     }
@@ -95,7 +95,31 @@ pub fn run(args: &[String]) -> i32 {
         scale: args.iter().position(|a| a == "--scale").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(1.0),
         _pad: [0.0; 2],
     };
-    let Some(px) = gpu.render_offscreen(w, params) else {
+    // Indicatori con dati di esempio, come sullo schermo con il Dock (Dock al centro, largo il 47%).
+    let style = args.iter().position(|a| a == "--indicatori").and_then(|i| args.get(i + 1)).map(|s| match s.as_str() {
+        "pills" => crate::config::IndicatorStyle::Pills,
+        "big_clock" => crate::config::IndicatorStyle::BigClock,
+        _ => crate::config::IndicatorStyle::Text,
+    });
+    let ind = crate::config::Indicators { style: style.unwrap_or(crate::config::IndicatorStyle::Text), ..Default::default() };
+    let mut overlay = style.map(|_| crate::overlay::Overlay::new(&gpu, gpu.format));
+    let ppp = 2.0 * params.scale;
+    let (sw, sh) = (width as f32 / 2.0, height as f32 / 2.0);
+    let frame = crate::overlay::Frame {
+        ind: &ind,
+        stats: crate::sysstats::Stats { cpu: 23.0, ram_used: 12_025_908_428, ram_total: 17_179_869_184 },
+        hm: (14, 32),
+        dock: crate::indicators::DockPlace::Bottom { x0: sw * 0.265, x1: sw * 0.735, top: sh - 64.0 },
+        opacity: 1.0,
+    };
+    let size_px = [(width as f32 * params.scale).round() as u32, (height as f32 * params.scale).round() as u32];
+    let mut draw_ind = |g: &Gpu, enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
+        if let Some(o) = overlay.as_mut() {
+            o.draw(g, enc, view, size_px, ppp, &frame);
+        }
+    };
+    let extra: Option<render::Extra> = if style.is_some() { Some(&mut draw_ind) } else { None };
+    let Some(px) = gpu.render_offscreen(w, params, extra) else {
         eprintln!("rendering non riuscito (errore nello shader?)");
         return 1;
     };

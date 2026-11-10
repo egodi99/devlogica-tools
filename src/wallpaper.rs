@@ -220,7 +220,7 @@ impl Wallpapers {
                 _pad: [0.0; 2],
             };
             let w = catalog.iter().find(|w| w.id == screen.wallpaper).unwrap_or(&catalog[0]);
-            gpu.draw(&mut screen.target, w, params);
+            gpu.draw(&mut screen.target, w, params, None);
         }
     }
 

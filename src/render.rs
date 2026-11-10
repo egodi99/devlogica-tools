@@ -7,6 +7,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use winit::window::Window;
 
+/// Passaggio di disegno aggiuntivo, eseguito dopo lo shader sulla stessa immagine
+/// (usato dagli indicatori sullo sfondo).
+pub type Extra<'a> = &'a mut dyn FnMut(&Gpu, &mut wgpu::CommandEncoder, &wgpu::TextureView);
+
 /// Parametri passati allo shader. Deve combaciare con `struct Params` in prelude.wgsl.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
@@ -296,7 +300,7 @@ impl Gpu {
         t.surface.configure(&self.device, &t.config);
     }
 
-    pub fn draw(&mut self, t: &mut Target, w: &Wallpaper, params: Params) {
+    pub fn draw(&mut self, t: &mut Target, w: &Wallpaper, params: Params, extra: Option<Extra>) {
         let frame = match t.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return,
@@ -324,13 +328,16 @@ impl Gpu {
             pass.set_bind_group(0, &t.bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
+        if let Some(extra) = extra {
+            extra(self, &mut enc, &view);
+        }
         self.queue.submit([enc.finish()]);
         self.queue.present(frame);
     }
 
     /// Disegna uno sfondo su una texture fuori schermo e restituisce i pixel RGBA.
     /// Usato per esportare immagini statiche (opzione --snapshot).
-    pub fn render_offscreen(&mut self, w: &Wallpaper, params: Params) -> Option<Vec<u8>> {
+    pub fn render_offscreen(&mut self, w: &Wallpaper, params: Params, extra: Option<Extra>) -> Option<Vec<u8>> {
         let (width, height) = scaled(params.res[0] as u32, params.res[1] as u32, params.scale);
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("offscreen"),
@@ -361,6 +368,9 @@ impl Gpu {
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..3, 0..1);
+        }
+        if let Some(extra) = extra {
+            extra(self, &mut enc, &view);
         }
         enc.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
