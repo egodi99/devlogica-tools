@@ -63,6 +63,45 @@ pub enum AlertStyle {
     Tray,
 }
 
+/// Stile degli indicatori sullo sfondo (solo macOS).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndicatorStyle {
+    /// Testo semitrasparente direttamente sullo sfondo.
+    Text,
+    /// Ogni elemento in una pillola di vetro, come il Dock.
+    Pills,
+    /// Orologio grande, CPU e RAM piccoli sotto.
+    BigClock,
+}
+
+/// Dove mostrare un indicatore rispetto al Dock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Side {
+    Hidden,
+    Left,
+    Right,
+}
+
+/// CPU, RAM, orologio e logo ai lati del Dock (solo macOS).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Indicators {
+    pub enabled: bool,
+    pub style: IndicatorStyle,
+    pub logo: Side,
+    pub clock: Side,
+    pub ram: Side,
+    pub cpu: Side,
+}
+
+impl Default for Indicators {
+    fn default() -> Self {
+        Self { enabled: true, style: IndicatorStyle::Text, logo: Side::Left, clock: Side::Left, ram: Side::Right, cpu: Side::Right }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -89,6 +128,8 @@ pub struct Config {
     pub paused: bool,
     /// Mette in pausa gli sfondi quando un'applicazione è a schermo intero (solo Windows).
     pub pause_on_fullscreen: bool,
+    // ---- indicatori ----
+    pub indicators: Indicators,
 }
 
 impl Default for Config {
@@ -109,6 +150,7 @@ impl Default for Config {
             show_logo: true,
             paused: false,
             pause_on_fullscreen: true,
+            indicators: Indicators::default(),
         }
     }
 }
@@ -198,4 +240,32 @@ pub fn now_ms() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as f64)
         .unwrap_or(0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indicatori_default() {
+        assert_eq!(
+            Config::default().indicators,
+            Indicators { enabled: true, style: IndicatorStyle::Text, logo: Side::Left, clock: Side::Left, ram: Side::Right, cpu: Side::Right }
+        );
+    }
+
+    #[test]
+    fn config_vecchio_si_carica() {
+        let c: Config = serde_json::from_str(r#"{"name":"Anna","show_logo":false}"#).unwrap();
+        assert_eq!(c.name, "Anna");
+        assert!(!c.show_logo);
+        assert_eq!(c.indicators, Indicators::default());
+    }
+
+    #[test]
+    fn indicatori_parziali() {
+        let c: Config = serde_json::from_str(r#"{"indicators":{"cpu":"hidden"}}"#).unwrap();
+        assert_eq!(c.indicators.cpu, Side::Hidden);
+        assert_eq!(Indicators { cpu: Side::Right, ..c.indicators }, Indicators::default());
+    }
 }
