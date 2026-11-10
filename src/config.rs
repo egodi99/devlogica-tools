@@ -147,6 +147,9 @@ pub struct Config {
     pub pause_on_fullscreen: bool,
     // ---- indicatori ----
     pub indicators: Indicators,
+    // ---- aggiornamenti ----
+    /// Ultima versione già annunciata con una notifica automatica.
+    pub notified_version: String,
 }
 
 impl Default for Config {
@@ -168,6 +171,7 @@ impl Default for Config {
             paused: false,
             pause_on_fullscreen: true,
             indicators: Indicators::default(),
+            notified_version: String::new(),
         }
     }
 }
