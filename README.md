@@ -17,6 +17,7 @@ L'app dell'ufficio DevLogica, per **Windows** e **macOS**:
 ## Installazione (per tutti)
 
 Scarica l'ultima versione dalla pagina **Releases** del repository.
+Dalla 1.0.4 in poi gli aggiornamenti si installano dall'app stessa (vedi *Aggiornamenti*); chi ha una versione precedente installa la 1.0.4 a mano un'ultima volta.
 
 ### Windows
 1. Scarica `DevLogica-Tools-Windows.exe` e mettilo in una cartella stabile, per esempio `Documenti\DevLogica Tools`. Non serve installazione.
@@ -73,7 +74,17 @@ Compaiono solo sullo schermo che ha il Dock e si aggiornano ogni 2 secondi. Con 
 
 Per sapere quanto è largo il Dock, l'app chiede il permesso **Accessibilità** (*Impostazioni di Sistema → Privacy e sicurezza → Accessibilità*).
 Senza permesso gli indicatori funzionano lo stesso, ma lasciano libera una fascia fissa al centro dello schermo.
-L'app non è firmata con un certificato Apple: dopo un aggiornamento può servire togliere *DevLogica Tools* dall'elenco Accessibilità e aggiungerla di nuovo.
+Con *Dimensione dei testi* e *Dimensione del logo* (dal 75% al 200%) li ingrandisci o rimpicciolisci; *Ripristina* torna al 100%.
+
+L'app non è firmata con un certificato Apple: **dopo ogni aggiornamento** macOS può chiedere di nuovo il permesso Accessibilità, oppure serve togliere *DevLogica Tools* dall'elenco e aggiungerla di nuovo.
+
+### Aggiornamenti
+L'app controlla da sola se c'è una versione nuova, all'avvio e due volte al giorno; dal menu **Cerca aggiornamenti** controlla subito.
+Quando c'è una versione nuova compare una notifica di sistema e nel menu la voce **Aggiorna alla vX.Y.Z**: un clic e l'app scarica la versione nuova, si sostituisce e si riavvia.
+- **Windows**: cliccando la notifica parte direttamente l'aggiornamento.
+- **macOS**: la notifica è informativa (l'app non è firmata da Apple, quindi macOS non le consente notifiche cliccabili); si aggiorna dal menu o dalle Impostazioni.
+
+Se qualcosa va storto (rete, cartella non scrivibile) l'app resta com'è, lo dice in una notifica e nel menu compare anche *Apri la pagina della release* per scaricarla a mano.
 
 ---
 
@@ -157,7 +168,8 @@ git push origin v1.1.0
 GitHub Actions compila Windows e macOS (app universale), esegue i test e pubblica la release con
 `DevLogica-Tools-Windows.exe` e `DevLogica-Tools-macOS.zip`. La versione dell'app viene presa dal tag.
 
-Le app installate controllano le release due volte al giorno. Quando ne trovano una nuova, nel menu compare *Scarica la nuova versione*.
+Le app installate controllano le release due volte al giorno. Quando ne trovano una nuova la notificano e la installano con *Aggiorna alla vX.Y.Z*.
+**I nomi dei file della release non vanno cambiati** (`DevLogica-Tools-Windows.exe`, `DevLogica-Tools-macOS.zip` con dentro `DevLogica Tools.app`): l'aggiornamento dall'app li cerca per nome.
 Il repository da controllare viene inserito automaticamente durante la build su GitHub. Per una build locale si può impostare con la variabile `DEVLOGICA_REPO=utente/repo`.
 
 Dalla scheda *Actions* si può anche lanciare la pipeline a mano (*Run workflow*). In quel caso fa solo la build: i file restano tra gli artefatti dell'esecuzione, senza creare una release.
@@ -166,6 +178,8 @@ Dalla scheda *Actions* si può anche lanciare la pipeline a mano (*Run workflow*
 ```bash
 devlogica-tools --snapshot lame 3840 2160 20 lame.png     # immagine statica di uno sfondo
 devlogica-tools --ui call anteprima.png                   # anteprima di una finestra (call, caffe, conferma, impostazioni)
+devlogica-tools --notifica-prova                          # mostra una notifica di prova (su macOS lanciala dall'app .app)
+DEVLOGICA_FAKE_VERSION=1.0.0 devlogica-tools              # finge una versione vecchia per provare l'aggiornamento
 ```
 
 ### Struttura
@@ -183,7 +197,9 @@ src/indicators.rs    indicatori sullo sfondo: ordine, spazio accanto al Dock, fo
 src/overlay.rs       disegno degli indicatori sopra lo sfondo (egui)
 src/sysstats.rs      statistiche CPU e RAM (con test)
 src/sound.rs         suoni generati al volo
-src/update.rs        controllo aggiornamenti dalle release di GitHub
+src/update.rs        controllo aggiornamenti dalle release di GitHub e stati del menu (con test)
+src/install.rs       scaricamento, verifica e sostituzione dell'app (con test)
+src/notify.rs        notifiche di sistema
 src/platform/        Windows (desktop, microfono, avvio) e macOS (idem)
 shaders/             sfondi in WGSL
 esempi/onde.wgsl     esempio di sfondo personalizzato
