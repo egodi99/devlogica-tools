@@ -44,6 +44,8 @@ pub enum UiAction {
     Unignore(String),
     ConfigChanged,
     OpenUpdate,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    OpenAccessibility,
 }
 
 /// Dati che le finestre possono leggere (e, per le impostazioni, modificare).
@@ -55,6 +57,9 @@ pub struct View<'a> {
     pub ask: Option<&'a str>,
     pub update: Option<&'a str>,
     pub peers: Vec<String>,
+    /// Permesso Accessibilità (posizione esatta del Dock per gli indicatori, solo macOS).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub ax_trusted: bool,
     pub actions: Vec<UiAction>,
 }
 
@@ -469,6 +474,44 @@ fn section(ui: &mut egui::Ui, title: &str) {
     ui.label(RichText::new(title).size(15.0).strong().color(LILAC));
 }
 
+/// Indicatori sullo sfondo: solo su macOS, dove il Dock lascia libere le zone ai lati.
+#[cfg(target_os = "macos")]
+fn indicators_section(ui: &mut egui::Ui, v: &mut View) {
+    use crate::config::{IndicatorStyle, Side};
+    section(ui, "Indicatori sullo sfondo");
+    let ind = &mut v.cfg.indicators;
+    ui.checkbox(&mut ind.enabled, "Mostra CPU, RAM, orologio e logo ai lati del Dock");
+    ui.label(RichText::new("Fanno parte dello sfondo animato: con gli sfondi disattivati o in pausa non si vedono.").size(12.0).color(MUTED));
+    ui.add_enabled_ui(ind.enabled, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Stile");
+            ui.radio_value(&mut ind.style, IndicatorStyle::Text, "Solo testo");
+            ui.radio_value(&mut ind.style, IndicatorStyle::Pills, "Pillole come il Dock");
+            ui.radio_value(&mut ind.style, IndicatorStyle::BigClock, "Orologio grande");
+        });
+        egui::Grid::new("indicatori").num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
+            for (label, side) in [("Logo", &mut ind.logo), ("Orologio", &mut ind.clock), ("RAM", &mut ind.ram), ("CPU", &mut ind.cpu)] {
+                ui.label(label);
+                ui.radio_value(side, Side::Hidden, "Nascosto");
+                ui.radio_value(side, Side::Left, "Sinistra");
+                ui.radio_value(side, Side::Right, "Destra");
+                ui.end_row();
+            }
+        });
+        if v.ax_trusted {
+            ui.label(RichText::new("Posizione esatta del Dock: consentita").color(TEXT));
+        } else {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Posizione esatta del Dock: non consentita").color(TEXT));
+                if ui.small_button("Consenti in Accessibilità…").clicked() {
+                    v.actions.push(UiAction::OpenAccessibility);
+                }
+            });
+            ui.label(RichText::new("Senza permesso lascio libera una fascia al centro. Dopo un aggiornamento può servire ridare il permesso.").size(12.0).color(MUTED));
+        }
+    });
+}
+
 pub fn settings(ui: &mut egui::Ui, v: &mut View) {
     let before = v.cfg.clone();
     egui::Frame::new().fill(INK).inner_margin(18.0).show(ui, |ui| {
@@ -500,6 +543,9 @@ pub fn settings(ui: &mut egui::Ui, v: &mut View) {
                 ui.label("Volume del suono");
                 ui.add(egui::Slider::new(&mut v.cfg.volume, 0.0..=1.0).show_value(false));
             });
+
+            #[cfg(target_os = "macos")]
+            indicators_section(ui, v);
 
             section(ui, "Microfono in uso adesso");
             ui.label(RichText::new("Utile per capire cosa viene riconosciuto sul tuo computer.").size(12.0).color(MUTED));

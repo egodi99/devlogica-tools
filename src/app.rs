@@ -234,6 +234,7 @@ impl App {
                 rebuild_wall = true;
             }
             Action::ToggleLogo => self.cfg.show_logo = !self.cfg.show_logo,
+            Action::ToggleIndicators => self.cfg.indicators.enabled = !self.cfg.indicators.enabled,
             Action::TogglePause => self.cfg.paused = !self.cfg.paused,
             Action::ToggleFullscreenPause => self.cfg.pause_on_fullscreen = !self.cfg.pause_on_fullscreen,
             Action::ToggleAutostart => {
@@ -309,6 +310,7 @@ impl App {
                         self.send_all(&Packet::Ping { user: Some(me) });
                     }
                 }
+                UiAction::OpenAccessibility => platform::open_accessibility_settings(),
                 UiAction::OpenUpdate => {
                     if let Some((_, url)) = &self.update {
                         platform::open_url(url);
@@ -434,6 +436,7 @@ impl App {
             ask: ask.as_deref(),
             update: update.as_deref(),
             peers,
+            ax_trusted: self.ax_trusted,
             actions: Vec::new(),
         };
         for (win, kind) in [(&mut self.call_win, 0), (&mut self.coffee_win, 1), (&mut self.ask_win, 2), (&mut self.settings, 3)] {

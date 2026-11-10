@@ -24,6 +24,8 @@ pub enum Action {
     SetFps(u32),
     SetQuality(Quality),
     ToggleLogo,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    ToggleIndicators,
     TogglePause,
     #[cfg_attr(not(windows), allow(dead_code))]
     ToggleFullscreenPause,
@@ -161,6 +163,8 @@ pub fn build(s: &MenuState) -> Built {
     }
     let _ = wall.append(&quality);
     let _ = wall.append(&check("Mostra il logo", cfg.show_logo, Action::ToggleLogo));
+    #[cfg(target_os = "macos")]
+    let _ = wall.append(&check("Mostra gli indicatori", cfg.indicators.enabled, Action::ToggleIndicators));
     let _ = wall.append(&check("In pausa", cfg.paused, Action::TogglePause));
     #[cfg(windows)]
     let _ = wall.append(&check("Pausa con app a schermo intero", cfg.pause_on_fullscreen, Action::ToggleFullscreenPause));
