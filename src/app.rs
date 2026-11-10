@@ -8,7 +8,7 @@ use crate::render::Gpu;
 use crate::sound::{self, Chime};
 use crate::tray::{self, Action, Badge, MenuState};
 use crate::ui::{self, Edge, UiAction, UiWin, View};
-use crate::wallpaper::Wallpapers;
+use crate::wallpaper::{IndicatorState, Wallpapers};
 use crate::wallpapers::{self as catalog, Wallpaper};
 use crate::{platform, update};
 use std::collections::HashMap;
@@ -63,6 +63,12 @@ pub struct App {
     next_alive: Instant,
     next_edge: Instant,
     fullscreen: bool,
+    // indicatori sullo sfondo (solo macOS)
+    sampler: Option<crate::sysstats::Sampler>,
+    ind_state: Option<IndicatorState>,
+    /// Il permesso Accessibilità si chiede al massimo una volta per avvio.
+    ax_prompted: bool,
+    ax_trusted: bool,
 }
 
 impl App {
@@ -98,7 +104,24 @@ impl App {
             next_alive: now + Duration::from_secs(20),
             next_edge: now,
             fullscreen: false,
+            sampler: None,
+            ind_state: None,
+            ax_prompted: false,
+            ax_trusted: false,
         }
+    }
+
+    /// Aggiorna statistiche, ora e posizione del Dock per gli indicatori (ogni 2 secondi).
+    fn refresh_indicators(&mut self) {
+        if !cfg!(target_os = "macos") || !self.cfg.indicators.enabled {
+            self.ind_state = None;
+            return;
+        }
+        let sampler = self.sampler.get_or_insert_with(crate::sysstats::Sampler::start);
+        let stats = sampler.latest();
+        self.ax_trusted = platform::ax_trusted(!self.ax_prompted);
+        self.ax_prompted = true;
+        self.ind_state = Some(IndicatorState { stats, hm: platform::local_hm(), dock: platform::dock_info() });
     }
 
     fn me(&self) -> String {
@@ -632,6 +655,9 @@ impl ApplicationHandler<UserEvent> for App {
                 self.refresh(el);
             }
             self.fullscreen = self.cfg.pause_on_fullscreen && platform::fullscreen_busy();
+            if self.cfg.wallpaper_enabled {
+                self.refresh_indicators();
+            }
             let me = self.me();
             let (changed, out) = self.office.tick(&me);
             for p in out {
@@ -659,7 +685,7 @@ impl ApplicationHandler<UserEvent> for App {
         let wall_on = self.cfg.wallpaper_enabled && !self.cfg.paused && !self.fullscreen;
         if wall_on && now >= self.next_frame {
             if let Some(gpu) = self.gpu.as_mut() {
-                self.wall.render(gpu, &self.cfg, &self.catalog);
+                self.wall.render(gpu, &self.cfg, &self.catalog, self.ind_state.as_ref());
             }
             let step = Duration::from_secs_f64(1.0 / self.cfg.fps() as f64);
             self.next_frame += step;

@@ -2,6 +2,9 @@
 //! le tre modalità multimonitor.
 
 use crate::config::{log, Config, Mode};
+use crate::indicators::{dock_place, DockInfo, GRect};
+use crate::overlay::{Frame, Overlay};
+use crate::sysstats::Stats;
 use crate::platform;
 use crate::render::{self, Gpu, Params, Target};
 use crate::tray::MonitorInfo;
@@ -23,6 +26,16 @@ struct Screen {
     offset: [f32; 2],
     canvas: [f32; 2],
     occluded: bool,
+    /// Posizione e dimensione dello schermo in punti globali (per trovare lo schermo del Dock).
+    global: GRect,
+}
+
+/// Dati degli indicatori, aggiornati dall'app ogni 2 secondi (solo macOS).
+#[derive(Clone, Copy, Debug)]
+pub struct IndicatorState {
+    pub stats: Stats,
+    pub hm: (u32, u32),
+    pub dock: Option<DockInfo>,
 }
 
 pub struct Wallpapers {
@@ -32,6 +45,8 @@ pub struct Wallpapers {
     start: Instant,
     /// Momento dell'ultimo cambio di sfondo: fa ripartire l'animazione di apertura.
     changed: Instant,
+    /// Disegno degli indicatori, uno per formato di superficie; creati solo quando servono.
+    overlays: HashMap<wgpu::TextureFormat, Overlay>,
 }
 
 pub fn monitor_key(m: &MonitorHandle) -> String {
@@ -93,7 +108,7 @@ fn create_window(el: &ActiveEventLoop, m: &MonitorHandle) -> Option<Arc<Window>>
 impl Wallpapers {
     pub fn new() -> Self {
         let now = Instant::now();
-        Self { screens: HashMap::new(), monitors: Vec::new(), monitor_sig: String::new(), start: now, changed: now }
+        Self { screens: HashMap::new(), monitors: Vec::new(), monitor_sig: String::new(), start: now, changed: now, overlays: HashMap::new() }
     }
 
     pub fn owns(&self, id: WindowId) -> bool {
@@ -107,6 +122,9 @@ impl Wallpapers {
     /// (Ri)crea le finestre degli sfondi. Crea anche la GPU, se non esiste ancora.
     pub fn rebuild(&mut self, el: &ActiveEventLoop, gpu: &mut Option<Gpu>, cfg: &Config) {
         self.screens.clear();
+        if !cfg.indicators.enabled {
+            self.overlays.clear();
+        }
         let mons = monitor_list(el);
         self.monitor_sig = signature(&mons);
         for m in &mons {
@@ -143,7 +161,7 @@ impl Wallpapers {
         }
 
         let instance = gpu.as_ref().map(|g| g.instance.clone()).unwrap_or_else(render::new_instance);
-        let mut created: Vec<(Arc<Window>, wgpu::Surface<'static>, String, [f32; 2], [f32; 2], winit::dpi::PhysicalSize<u32>)> = Vec::new();
+        let mut created: Vec<(Arc<Window>, wgpu::Surface<'static>, String, [f32; 2], [f32; 2], winit::dpi::PhysicalSize<u32>, GRect)> = Vec::new();
         for m in &mons {
             let (pos, size) = (m.position(), m.size());
             let Some(window) = create_window(el, m) else { continue };
@@ -167,7 +185,10 @@ impl Wallpapers {
                 Mode::Span => ([(pos.x - x0) as f32, (pos.y - y0) as f32], [(x1 - x0) as f32, (y1 - y0) as f32]),
                 _ => ([0.0, 0.0], [size.width as f32, size.height as f32]),
             };
-            created.push((window, surface, wallpaper, offset, canvas, size));
+            let sf = m.scale_factor();
+            let (lp, ls) = (pos.to_logical::<f64>(sf), size.to_logical::<f64>(sf));
+            let global = GRect { x: lp.x, y: lp.y, w: ls.width, h: ls.height };
+            created.push((window, surface, wallpaper, offset, canvas, size, global));
         }
 
         if gpu.is_none() {
@@ -182,11 +203,11 @@ impl Wallpapers {
         let g = gpu.as_mut().unwrap();
         let in_use: Vec<String> = created.iter().map(|c| c.2.clone()).collect();
         g.retain_pipelines(&in_use);
-        for (window, surface, wallpaper, offset, canvas, size) in created {
+        for (window, surface, wallpaper, offset, canvas, size, global) in created {
             let id = window.id();
             let scale = cfg.quality.scale(size.height);
             let target = g.make_target(window, surface, scale);
-            self.screens.insert(id, Screen { target, size, wallpaper, offset, canvas, occluded: false });
+            self.screens.insert(id, Screen { target, size, wallpaper, offset, canvas, occluded: false, global });
         }
         self.changed = Instant::now();
         log(format!("Sfondi: {} schermi, modalità {:?}", self.screens.len(), cfg.mode));
@@ -196,7 +217,7 @@ impl Wallpapers {
         self.screens.clear();
     }
 
-    pub fn render(&mut self, gpu: &mut Gpu, cfg: &Config, catalog: &[Wallpaper]) {
+    pub fn render(&mut self, gpu: &mut Gpu, cfg: &Config, catalog: &[Wallpaper], ind: Option<&IndicatorState>) {
         if self.screens.is_empty() {
             return;
         }
@@ -204,6 +225,14 @@ impl Wallpapers {
         let time = (self.start.elapsed().as_secs_f64() % 21_600.0) as f32;
         let since = self.changed.elapsed().as_secs_f32().min(1_000.0);
         let logo = if cfg.show_logo { 1.0 } else { 0.0 };
+        // Gli indicatori vanno solo sullo schermo con il Dock (senza informazioni: quello principale).
+        let ind = ind.filter(|_| cfg.indicators.enabled);
+        let near = |a: f64, b: f64| (a - b).abs() <= 1.0;
+        let dock_screen = |g: &GRect| match ind.and_then(|i| i.dock) {
+            Some(d) => near(g.x, d.screen.x) && near(g.y, d.screen.y),
+            None => near(g.x, 0.0) && near(g.y, 0.0),
+        };
+        let opacity = { let t = ((since - 1.3) / (2.6 - 1.3)).clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) };
         for screen in self.screens.values_mut() {
             if screen.occluded {
                 continue;
@@ -220,7 +249,22 @@ impl Wallpapers {
                 _pad: [0.0; 2],
             };
             let w = catalog.iter().find(|w| w.id == screen.wallpaper).unwrap_or(&catalog[0]);
-            gpu.draw(&mut screen.target, w, params, None);
+            match ind.filter(|_| dock_screen(&screen.global)) {
+                Some(state) => {
+                    let format = screen.target.format;
+                    let overlay = self.overlays.entry(format).or_insert_with(|| Overlay::new(gpu, format));
+                    let dock = match state.dock {
+                        Some(d) => dock_place(d.screen, d.dock, d.at_bottom),
+                        None => crate::indicators::DockPlace::Unknown,
+                    };
+                    let frame = Frame { ind: &cfg.indicators, stats: state.stats, hm: state.hm, dock, opacity };
+                    let size_px = [screen.target.config.width, screen.target.config.height];
+                    let ppp = (screen.target.window.scale_factor() as f32) * screen.target.scale;
+                    let mut extra = |g: &Gpu, enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| overlay.draw(g, enc, view, size_px, ppp, &frame);
+                    gpu.draw(&mut screen.target, w, params, Some(&mut extra));
+                }
+                None => gpu.draw(&mut screen.target, w, params, None),
+            }
         }
     }
 
