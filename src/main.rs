@@ -6,6 +6,7 @@
 mod app;
 mod config;
 mod detect;
+mod indicators;
 mod net;
 mod office;
 mod platform;
