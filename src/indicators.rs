@@ -98,6 +98,51 @@ pub fn free_widths(screen_w: f32, dock: DockPlace) -> (f32, f32) {
     (l.max(0.0), r.max(0.0))
 }
 
+/// Centro verticale degli indicatori: la fascia del Dock, altrimenti appena sopra il bordo.
+/// Un blocco alto (orologio grande) non deve mai uscire dal fondo dello schermo.
+pub fn center_y(dock: DockPlace, screen_h: f32, max_h: f32) -> f32 {
+    match dock {
+        DockPlace::Bottom { top, .. } if top < screen_h => ((top + screen_h) / 2.0).min(screen_h - 4.0 - max_h / 2.0),
+        _ => screen_h - EDGE_MARGIN - max_h / 2.0,
+    }
+}
+
+/// Scala di disegno dello sfondo quando ci sono gli indicatori: il testo non va mai disegnato
+/// con meno di un pixel per punto (qualità "Ridotta" su uno schermo non Retina).
+pub fn indicator_scale(scale: f32, scale_factor: f32, indicators_on: bool) -> f32 {
+    if indicators_on && scale * scale_factor < 1.0 {
+        (1.0 / scale_factor.max(0.01)).min(1.0)
+    } else {
+        scale
+    }
+}
+
+fn contains(r: &GRect, x: f64, y: f64) -> bool {
+    x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
+}
+
+/// Sceglie lo schermo del Dock. `screens` = (frame, visibleFrame) in punti globali,
+/// `ax` = barra del Dock letta con l'Accessibilità, `autohide` = Dock nascosto automaticamente.
+pub fn choose_dock(screens: &[(GRect, GRect)], ax: Option<GRect>, autohide: bool) -> Option<DockInfo> {
+    let first = screens.first()?;
+    if let Some(d) = ax.filter(|_| !autohide) {
+        let (cx, cy) = (d.x + d.w / 2.0, d.y + d.h / 2.0);
+        if let Some((frame, _)) = screens.iter().find(|(f, _)| contains(f, cx, cy)) {
+            return Some(DockInfo { screen: *frame, dock: Some(d), at_bottom: d.w > d.h });
+        }
+    }
+    // Senza misura esatta: lo schermo la cui area utile non arriva fino in fondo (o ai lati).
+    for (f, v) in screens {
+        if (f.y + f.h) - (v.y + v.h) > 1.0 {
+            return Some(DockInfo { screen: *f, dock: None, at_bottom: true });
+        }
+        if v.w + 1.0 < f.w {
+            return Some(DockInfo { screen: *f, dock: None, at_bottom: false });
+        }
+    }
+    Some(DockInfo { screen: first.0, dock: None, at_bottom: true })
+}
+
 /// Quanti blocchi, partendo dal bordo dello schermo, stanno in `available` punti.
 /// Ci si ferma al primo che non ci sta: quelli più vicini al Dock vengono omessi interi.
 pub fn fit(widths: &[f32], available: f32, gap: f32) -> usize {
@@ -234,5 +279,49 @@ mod tests {
     #[test]
     fn dock_place_laterale() {
         assert_eq!(dock_place(r(0., 0., 1512., 982.), Some(r(0., 200., 64., 500.)), false), DockPlace::Side);
+    }
+
+    #[test]
+    fn center_y_non_esce_dallo_schermo() {
+        let dock = DockPlace::Bottom { x0: 400.0, x1: 1100.0, top: 950.0 };
+        assert_eq!(center_y(dock, 982.0, 20.0), 966.0);
+        assert_eq!(center_y(dock, 982.0, 62.0), 982.0 - 4.0 - 31.0);
+        assert_eq!(center_y(DockPlace::Unknown, 982.0, 20.0), 982.0 - 16.0 - 10.0);
+    }
+
+    #[test]
+    fn ppp_minimo_per_il_testo() {
+        assert_eq!(indicator_scale(0.5, 1.0, true), 1.0);
+        assert_eq!(indicator_scale(0.5, 2.0, true), 0.5);
+        assert_eq!(indicator_scale(0.5, 1.0, false), 0.5);
+        assert_eq!(indicator_scale(1.0, 1.0, true), 1.0);
+    }
+
+    fn scr(x: f64, y: f64, w: f64, h: f64, vy: f64, vh: f64) -> (GRect, GRect) {
+        (r(x, y, w, h), r(x, vy, w, vh))
+    }
+
+    #[test]
+    fn choose_dock_visibile() {
+        let s = [scr(0., 0., 1920., 1080., 31., 988.), scr(1920., 98., 1512., 982., 130., 950.)];
+        let d = r(500., 1020., 900., 58.);
+        assert_eq!(choose_dock(&s, Some(d), false), Some(DockInfo { screen: s[0].0, dock: Some(d), at_bottom: true }));
+    }
+
+    #[test]
+    fn choose_dock_nascosto_usa_fascia_fissa() {
+        // due schermi impilati: la barra nascosta del superiore "cade" nell'inferiore
+        let s = [scr(0., 0., 1920., 1080., 31., 1049.), scr(0., 1080., 1920., 1080., 1080., 1080.)];
+        let d = r(500., 1082., 900., 58.);
+        let got = choose_dock(&s, Some(d), true).unwrap();
+        assert_eq!(got.dock, None);
+        assert_eq!(got.screen, s[0].0);
+    }
+
+    #[test]
+    fn choose_dock_senza_permesso() {
+        let s = [scr(0., 0., 1920., 1080., 0., 1080.), scr(1920., 0., 1512., 982., 31., 890.)];
+        assert_eq!(choose_dock(&s, None, false), Some(DockInfo { screen: s[1].0, dock: None, at_bottom: true }));
+        assert_eq!(choose_dock(&[], None, false), None);
     }
 }

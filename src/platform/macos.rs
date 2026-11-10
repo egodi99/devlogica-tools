@@ -512,36 +512,31 @@ fn screens() -> Vec<(GRect, GRect)> {
     }
 }
 
-fn contains(r: &GRect, x: f64, y: f64) -> bool {
-    x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
+pub fn dock_info() -> Option<DockInfo> {
+    let ax = if ax_trusted(false) { dock_rect_ax() } else { None };
+    crate::indicators::choose_dock(&screens(), ax, dock_autohide())
 }
 
-/// Schermo con il Dock e, se il permesso c'è e il Dock è visibile, il suo rettangolo.
-pub fn dock_info() -> Option<DockInfo> {
-    let scr = screens();
-    if scr.is_empty() {
-        return None;
-    }
-    if ax_trusted(false) {
-        if let Some(d) = dock_rect_ax() {
-            let (cx, cy) = (d.x + d.w / 2.0, d.y + d.h / 2.0);
-            if let Some((frame, _)) = scr.iter().find(|(f, _)| contains(f, cx, cy)) {
-                // Dock nascosto automaticamente: la barra sta fuori dallo schermo.
-                let hidden = d.y + 2.0 >= frame.y + frame.h;
-                return Some(DockInfo { screen: *frame, dock: (!hidden).then_some(d), at_bottom: d.w > d.h });
-            }
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFPreferencesCopyAppValue(key: *const c_void, app: *const c_void) -> *const c_void;
+    fn CFBooleanGetValue(b: *const c_void) -> u8;
+    fn CFGetTypeID(v: *const c_void) -> usize;
+    fn CFBooleanGetTypeID() -> usize;
+}
+
+/// Il Dock si nasconde automaticamente? (preferenza "autohide" di com.apple.dock)
+fn dock_autohide() -> bool {
+    let (key, app) = (cfstr(c"autohide"), cfstr(c"com.apple.dock"));
+    let v = unsafe { CFPreferencesCopyAppValue(key, app) };
+    let on = !v.is_null() && unsafe { CFGetTypeID(v) == CFBooleanGetTypeID() && CFBooleanGetValue(v) != 0 };
+    unsafe {
+        if !v.is_null() {
+            CFRelease(v);
         }
+        CFRelease(key);
+        CFRelease(app);
     }
-    // Senza Accessibilità: lo schermo la cui area utile non arriva fino in fondo (o ai lati).
-    for (f, v) in &scr {
-        let bottom_gap = (f.y + f.h) - (v.y + v.h);
-        if bottom_gap > 1.0 {
-            return Some(DockInfo { screen: *f, dock: None, at_bottom: true });
-        }
-        if v.w + 1.0 < f.w {
-            return Some(DockInfo { screen: *f, dock: None, at_bottom: false });
-        }
-    }
-    Some(DockInfo { screen: scr[0].0, dock: None, at_bottom: true })
+    on
 }
 

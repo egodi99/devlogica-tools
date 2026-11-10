@@ -27,6 +27,15 @@ pub struct Overlay {
 const LOGO_H: f32 = 18.0;
 const PILL_PAD: Vec2 = Vec2::new(10.0, 5.0);
 
+/// Logo ridotto una volta sola (egui-wgpu non crea mipmap): tre volte l'altezza disegnata,
+/// così resta nitido sia sugli schermi Retina sia su quelli normali.
+fn logo_image() -> image::RgbaImage {
+    let img = image::load_from_memory(include_bytes!("../assets/logo.png")).expect("logo").to_rgba8();
+    let h = (LOGO_H * 3.0) as u32;
+    let w = (img.width() as f32 * h as f32 / img.height() as f32).round() as u32;
+    image::imageops::resize(&img, w, h, image::imageops::FilterType::Lanczos3)
+}
+
 /// Un blocco già misurato, pronto da disegnare.
 enum Piece {
     Logo,
@@ -37,10 +46,10 @@ enum Piece {
 impl Overlay {
     pub fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Self {
         let ctx = egui::Context::default();
-        let img = image::load_from_memory(include_bytes!("../assets/logo.png")).expect("logo").to_rgba8();
+        let img = logo_image();
         let size = [img.width() as usize, img.height() as usize];
         let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-        let logo = ctx.load_texture("logo", color, egui::TextureOptions { mipmap_mode: Some(egui::TextureFilter::Linear), ..egui::TextureOptions::LINEAR });
+        let logo = ctx.load_texture("logo", color, egui::TextureOptions::LINEAR);
         let renderer = egui_wgpu::Renderer::new(&gpu.device, format, egui_wgpu::RendererOptions::default());
         Self { ctx, renderer, logo }
     }
@@ -178,11 +187,7 @@ fn paint(ui: &mut egui::Ui, screen: Vec2, logo: (egui::TextureId, Vec2), f: &Fra
             continue;
         }
         let max_h = sizes[..n].iter().map(|s| s.y).fold(0.0, f32::max);
-        // Centro verticale: la fascia del Dock, altrimenti appena sopra il bordo inferiore.
-        let cy = match f.dock {
-            DockPlace::Bottom { top, .. } if top < screen.y => (top + screen.y) / 2.0,
-            _ => screen.y - EDGE_MARGIN - max_h / 2.0,
-        };
+        let cy = indicators::center_y(f.dock, screen.y, max_h);
         let mut x = if side == Side::Left { EDGE_MARGIN } else { screen.x - EDGE_MARGIN };
         for (p, s) in pieces.iter().zip(&sizes).take(n) {
             let x0 = if side == Side::Left { x } else { x - s.x };
@@ -218,5 +223,15 @@ fn draw_piece(painter: &egui::Painter, p: &Piece, rect: Rect, side: Side, logo: 
                 y += r.size().y;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn logo_ridotto_una_volta() {
+        let img = super::logo_image();
+        assert_eq!(img.height(), (super::LOGO_H * 3.0) as u32);
+        assert!(img.width() > img.height() * 3);
     }
 }

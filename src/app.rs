@@ -121,7 +121,7 @@ impl App {
         let stats = sampler.latest();
         self.ax_trusted = platform::ax_trusted(!self.ax_prompted);
         self.ax_prompted = true;
-        self.ind_state = Some(IndicatorState { stats, hm: platform::local_hm(), dock: platform::dock_info() });
+        self.ind_state = stats.ready().then(|| IndicatorState { stats, hm: platform::local_hm(), dock: platform::dock_info() });
     }
 
     fn me(&self) -> String {

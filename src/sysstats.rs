@@ -13,6 +13,13 @@ pub struct Stats {
     pub ram_total: u64,
 }
 
+impl Stats {
+    /// Vero dopo il primo campione: prima non si mostra niente, invece di valori a zero.
+    pub fn ready(&self) -> bool {
+        self.ram_total > 0
+    }
+}
+
 /// CPU usata tra due letture dei tick `[user, system, idle, nice]`.
 /// Contatori fermi o tornati indietro danno 0, mai NaN.
 pub fn cpu_percent(prev: [u64; 4], cur: [u64; 4]) -> f32 {
@@ -46,7 +53,9 @@ impl Sampler {
         let latest = Arc::new(Mutex::new(Stats::default()));
         let out = latest.clone();
         let _ = std::thread::Builder::new().name("statistiche".into()).spawn(move || {
-            let mut prev: Option<[u64; 4]> = None;
+            // primo campione dopo mezzo secondo, così la CPU ha subito un valore vero
+            let mut prev: Option<[u64; 4]> = platform::cpu_ticks();
+            std::thread::sleep(Duration::from_millis(500));
             loop {
                 let ticks = platform::cpu_ticks();
                 let cpu = match (prev, ticks) {
@@ -91,5 +100,10 @@ mod tests {
         assert_eq!(ram_used(1000, 100, 200, 50, 16384), (1000 - 100 + 200 + 50) * 16384);
         assert_eq!(ram_used(10, 100, 0, 0, 4096), 0);
     }
-}
 
+    #[test]
+    fn stats_non_pronte_finche_manca_la_ram() {
+        assert!(!Stats::default().ready());
+        assert!(Stats { cpu: 0.0, ram_used: 1, ram_total: 2 }.ready());
+    }
+}

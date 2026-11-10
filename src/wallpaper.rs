@@ -205,7 +205,11 @@ impl Wallpapers {
         g.retain_pipelines(&in_use);
         for (window, surface, wallpaper, offset, canvas, size, global) in created {
             let id = window.id();
-            let scale = cfg.quality.scale(size.height);
+            let scale = crate::indicators::indicator_scale(
+                cfg.quality.scale(size.height),
+                window.scale_factor() as f32,
+                cfg!(target_os = "macos") && cfg.indicators.enabled,
+            );
             let target = g.make_target(window, surface, scale);
             self.screens.insert(id, Screen { target, size, wallpaper, offset, canvas, occluded: false, global });
         }
