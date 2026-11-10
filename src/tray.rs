@@ -16,6 +16,8 @@ pub enum Action {
     ShowCoffee,
     OpenSettings,
     OpenUpdate,
+    CheckUpdates,
+    InstallUpdate,
     // sfondi
     ToggleWallpaper,
     SetMode(Mode),
@@ -51,7 +53,7 @@ pub struct MenuState<'a> {
     pub catalog: &'a [Wallpaper],
     pub monitors: &'a [MonitorInfo],
     pub autostart: bool,
-    pub update: Option<&'a str>,
+    pub update: &'a crate::update::UpdateState,
     pub calls_hidden: bool,
     pub coffee_hidden: bool,
 }
@@ -177,8 +179,16 @@ pub fn build(s: &MenuState) -> Built {
     let _ = menu.append(&item("Impostazioni…", true, Some(Action::OpenSettings)));
     let _ = menu.append(&check("Avvia all'accesso", s.autostart, Action::ToggleAutostart));
     let _ = menu.append(&PredefinedMenuItem::separator());
-    if let Some(tag) = s.update {
-        let _ = menu.append(&item(&format!("Scarica la nuova versione {tag}"), true, Some(Action::OpenUpdate)));
+    if crate::update::repo().is_some() {
+        use crate::update::UpdateCmd;
+        for (text, enabled, cmd) in s.update.menu_items() {
+            let action = cmd.map(|c| match c {
+                UpdateCmd::Check => Action::CheckUpdates,
+                UpdateCmd::Install => Action::InstallUpdate,
+                UpdateCmd::OpenPage => Action::OpenUpdate,
+            });
+            let _ = menu.append(&item(&text, enabled, action));
+        }
     }
     let _ = menu.append(&item(&format!("Versione {}", env!("CARGO_PKG_VERSION")), false, None));
     let _ = menu.append(&item("Esci", true, Some(Action::Quit)));

@@ -117,12 +117,14 @@ pub fn indicator_scale(scale: f32, scale_factor: f32, indicators_on: bool) -> f3
     }
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn contains(r: &GRect, x: f64, y: f64) -> bool {
     x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
 }
 
 /// Sceglie lo schermo del Dock. `screens` = (frame, visibleFrame) in punti globali,
 /// `ax` = barra del Dock letta con l'Accessibilità, `autohide` = Dock nascosto automaticamente.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn choose_dock(screens: &[(GRect, GRect)], ax: Option<GRect>, autohide: bool) -> Option<DockInfo> {
     let first = screens.first()?;
     if let Some(d) = ax.filter(|_| !autohide) {

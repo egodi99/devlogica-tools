@@ -33,7 +33,12 @@ pub fn run_ui(args: &[String]) -> i32 {
         MicUser { id: "obs64.exe".into(), label: "obs64".into(), known_call_app: false },
     ];
     let peers: Vec<String> = office.peers.keys().cloned().collect();
-    let mut view = ui::View { cfg: &mut cfg, office: &office, me: "Emanuele".into(), mic: &mic, ask: Some("Microsoft Teams"), update: Some("v1.1.0"), peers, ax_trusted: false, actions: Vec::new() };
+    let upd = crate::update::UpdateState::Available(crate::update::Release {
+        tag: "v1.1.0".into(),
+        page: String::new(),
+        asset: Some(crate::update::Asset { url: String::new(), size: 0 }),
+    });
+    let mut view = ui::View { cfg: &mut cfg, office: &office, me: "Emanuele".into(), mic: &mic, ask: Some("Microsoft Teams"), update: &upd, peers, ax_trusted: false, actions: Vec::new() };
     let ppp = 2.0;
     let (w, h, bg): (f64, f64, _) = match kind.as_str() {
         "call" => (540.0, ui::call_panel_height(3), ui::RED_BG),

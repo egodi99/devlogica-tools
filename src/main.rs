@@ -9,6 +9,7 @@ mod detect;
 mod indicators;
 mod install;
 mod net;
+mod notify;
 mod office;
 mod overlay;
 mod platform;
@@ -28,6 +29,9 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(|a| a == "--snapshot").unwrap_or(false) {
         std::process::exit(snapshot::run(&args[2..]));
+    }
+    if args.get(1).map(|a| a == "--notifica-prova").unwrap_or(false) {
+        std::process::exit(notify::run_test());
     }
     if args.get(1).map(|a| a == "--ui").unwrap_or(false) {
         std::process::exit(snapshot::run_ui(&args[2..]));

@@ -433,6 +433,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 name = "devlogica-tools"
 version = "1.0.3"
 dependencies = [
+ "block2 0.6.2",
  "bytemuck",
  "dirs 6.0.0",
  "egui",
@@ -442,6 +443,7 @@ dependencies = [
  "image",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
+ "objc2-user-notifications 0.3.2",
  "pollster",
  "serde",
  "serde_json",
@@ -1852,7 +1854,7 @@ dependencies = [
  "objc2-quartz-core 0.2.2",
  "objc2-symbols",
  "objc2-uniform-type-identifiers",
- "objc2-user-notifications",
+ "objc2-user-notifications 0.2.2",
 ]
 
 [[package]]
@@ -1889,6 +1891,18 @@ dependencies = [
  "objc2 0.5.3",
  "objc2-core-location",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-user-notifications"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9df9128cbbfef73cda168416ccf7f837b62737d748333bfe9ab71c245d76613e"
+dependencies = [
+ "bitflags 2.13.2",
+ "block2 0.6.2",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]

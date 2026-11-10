@@ -272,3 +272,110 @@ pub fn make_overlay(_window: &Window) {}
 pub fn open_url(url: &str) {
     let _ = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn();
 }
+
+// ---------------------------------------------------------------------------
+// Notifiche: balloon dell'area di notifica con una piccola icona temporanea, propria
+// dell'app (l'icona principale appartiene a tray-icon). Il clic arriva come
+// NIN_BALLOONUSERCLICK alla nostra finestra nascosta, sullo stesso thread di winit.
+// ---------------------------------------------------------------------------
+
+use windows::Win32::Foundation::LRESULT;
+use windows::Win32::UI::Shell::{
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+};
+
+const NOTIFY_UID: u32 = 7;
+const WM_NOTIFY_CB: u32 = WM_APP + 7;
+// messaggi della notifica (WM_USER + n), con la versione predefinita dell'icona
+const BALLOON_HIDE: u32 = WM_USER + 3;
+const BALLOON_TIMEOUT: u32 = WM_USER + 4;
+const BALLOON_USERCLICK: u32 = WM_USER + 5;
+
+static NOTIFY_HWND: AtomicIsize = AtomicIsize::new(0);
+
+unsafe extern "system" fn notify_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_NOTIFY_CB {
+        match lparam.0 as u32 {
+            BALLOON_USERCLICK => {
+                remove_balloon_icon(hwnd);
+                crate::notify::clicked();
+            }
+            BALLOON_TIMEOUT | BALLOON_HIDE => remove_balloon_icon(hwnd),
+            _ => {}
+        }
+        return LRESULT(0);
+    }
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+fn remove_balloon_icon(hwnd: HWND) {
+    let data = NOTIFYICONDATAW { cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32, hWnd: hwnd, uID: NOTIFY_UID, ..Default::default() };
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_DELETE, &data);
+    }
+}
+
+fn notify_window() -> Option<HWND> {
+    let cur = NOTIFY_HWND.load(Ordering::SeqCst);
+    if cur != 0 {
+        return Some(HWND(cur as *mut _));
+    }
+    unsafe {
+        let class = WNDCLASSW { lpfnWndProc: Some(notify_wndproc), lpszClassName: w!("DevLogicaToolsNotifiche"), ..Default::default() };
+        RegisterClassW(&class);
+        let hwnd = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("DevLogicaToolsNotifiche"),
+            w!("DevLogica Tools – notifiche"),
+            WINDOW_STYLE(0),
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            None,
+            None,
+        )
+        .ok()?;
+        NOTIFY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
+        Some(hwnd)
+    }
+}
+
+fn copy_wide(dst: &mut [u16], s: &str) {
+    let n = dst.len() - 1;
+    for (d, c) in dst.iter_mut().zip(s.encode_utf16().take(n).chain(std::iter::once(0))) {
+        *d = c;
+    }
+}
+
+/// Mostra una notifica di sistema (va chiamata sul thread principale).
+pub fn show_balloon(title: &str, body: &str) {
+    let Some(hwnd) = notify_window() else {
+        log("Notifica non mostrata: finestra non creata");
+        return;
+    };
+    let mut data = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: NOTIFY_UID,
+        uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_INFO,
+        uCallbackMessage: WM_NOTIFY_CB,
+        dwInfoFlags: NIIF_INFO,
+        ..Default::default()
+    };
+    unsafe {
+        data.hIcon = LoadIconW(None, IDI_INFORMATION).unwrap_or_default();
+    }
+    copy_wide(&mut data.szTip, title);
+    copy_wide(&mut data.szInfoTitle, title);
+    copy_wide(&mut data.szInfo, body);
+    unsafe {
+        // se l'icona c'è già (notifica precedente) basta aggiornarla
+        if !Shell_NotifyIconW(NIM_MODIFY, &data).as_bool() && !Shell_NotifyIconW(NIM_ADD, &data).as_bool() {
+            log("Notifica non mostrata: Shell_NotifyIcon non riuscita");
+        }
+    }
+}
+

@@ -10,7 +10,9 @@ use crate::tray::{self, Action, Badge, MenuState};
 use crate::ui::{self, Edge, UiAction, UiWin, View};
 use crate::wallpaper::{IndicatorState, Wallpapers};
 use crate::wallpapers::{self as catalog, Wallpaper};
-use crate::{platform, update};
+use crate::install::Phase;
+use crate::update::{Release, UpdateState};
+use crate::{install, notify, platform, update};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
@@ -26,7 +28,13 @@ use winit::window::WindowId;
 pub enum UserEvent {
     Menu(MenuId),
     Packet(Packet, IpAddr),
-    Update(String, String),
+    /// Esito di un controllo aggiornamenti (`manual` = chiesto dall'utente).
+    CheckDone { manual: bool, result: Result<Option<Release>, String> },
+    InstallPhase(Phase),
+    InstallFailed(String),
+    /// Versione nuova installata: l'app in uso deve chiudersi.
+    InstallDone,
+    NotificationClicked,
 }
 
 pub struct App {
@@ -54,7 +62,7 @@ pub struct App {
     ask: Option<String>,
     /// L'utente ha risposto "No": non richiedere finché il microfono non si chiude.
     ask_declined: bool,
-    update: Option<(String, String)>,
+    upd: UpdateState,
     // ritmi
     started: Instant,
     next_frame: Instant,
@@ -96,7 +104,7 @@ impl App {
             coffee_hidden: false,
             ask: None,
             ask_declined: false,
-            update: None,
+            upd: UpdateState::Idle,
             started: now,
             next_frame: now,
             next_check: now + Duration::from_secs(2),
@@ -122,6 +130,87 @@ impl App {
         self.ax_trusted = platform::ax_trusted(!self.ax_prompted);
         self.ax_prompted = true;
         self.ind_state = stats.ready().then(|| IndicatorState { stats, hm: platform::local_hm(), dock: platform::dock_info() });
+    }
+
+    // ------------------------------------------------------------------ aggiornamenti
+
+    fn open_release_page(&self) {
+        let url = match self.upd.release() {
+            Some(r) if !r.page.is_empty() => r.page.clone(),
+            _ => update::repo().map(|r| format!("https://github.com/{r}/releases/latest")).unwrap_or_default(),
+        };
+        if !url.is_empty() {
+            platform::open_url(&url);
+        }
+    }
+
+    /// Controllo chiesto dall'utente ("Cerca aggiornamenti").
+    fn check_updates(&mut self, manual: bool) {
+        if matches!(self.upd, UpdateState::Checking { .. } | UpdateState::Downloading(_) | UpdateState::Installing(_)) {
+            return;
+        }
+        self.upd = UpdateState::Checking { manual };
+        let proxy = self.proxy.clone();
+        let _ = std::thread::Builder::new().name("controllo aggiornamenti".into()).spawn(move || {
+            let _ = proxy.send_event(UserEvent::CheckDone { manual, result: update::fetch() });
+        });
+        self.refresh_tray();
+    }
+
+    fn on_check_done(&mut self, manual: bool, result: Result<Option<Release>, String>) {
+        // un controllo automatico non disturba un aggiornamento in corso
+        if matches!(self.upd, UpdateState::Downloading(_) | UpdateState::Installing(_)) {
+            return;
+        }
+        match result {
+            Ok(Some(r)) => {
+                if update::should_notify(manual, &r.tag, &self.cfg.notified_version) {
+                    let click = notify::clickable() && r.asset.is_some();
+                    let tail = if click { "Clicca per aggiornare." } else { "Apri il menu per aggiornare." };
+                    notify::show(&format!("È disponibile la versione {}. {tail}", r.tag), click);
+                    if !manual {
+                        self.cfg.notified_version = r.tag.clone();
+                        self.cfg.save();
+                    }
+                }
+                self.upd = UpdateState::Available(r);
+            }
+            Ok(None) => {
+                self.upd = UpdateState::Idle;
+                if manual {
+                    notify::show(&format!("Hai già l'ultima versione ({}).", update::current_version()), false);
+                }
+            }
+            Err(e) => {
+                log(format!("Controllo aggiornamenti non riuscito: {e}"));
+                if manual {
+                    self.upd = UpdateState::Idle;
+                    notify::show(&format!("Controllo aggiornamenti non riuscito: {e}"), false);
+                }
+            }
+        }
+    }
+
+    /// Scarica e installa la versione nuova (menu, Impostazioni o clic sulla notifica).
+    fn start_install(&mut self) {
+        if !self.upd.can_start() {
+            return;
+        }
+        let Some(r) = self.upd.release().cloned() else { return };
+        let Some(asset) = r.asset.clone() else { return };
+        self.upd = UpdateState::Downloading(r.clone());
+        let proxy = self.proxy.clone();
+        let _ = std::thread::Builder::new().name("aggiornamento".into()).spawn(move || {
+            let p = proxy.clone();
+            let ev = match install::install(&asset, &r.tag, move |ph| {
+                let _ = p.send_event(UserEvent::InstallPhase(ph));
+            }) {
+                Ok(()) => UserEvent::InstallDone,
+                Err(e) => UserEvent::InstallFailed(e),
+            };
+            let _ = proxy.send_event(ev);
+        });
+        self.refresh_tray();
     }
 
     fn me(&self) -> String {
@@ -207,11 +296,9 @@ impl App {
             }
             Action::ShowCoffee => self.coffee_hidden = false,
             Action::OpenSettings => self.open_settings(el),
-            Action::OpenUpdate => {
-                if let Some((_, url)) = &self.update {
-                    platform::open_url(url);
-                }
-            }
+            Action::OpenUpdate => self.open_release_page(),
+            Action::CheckUpdates => self.check_updates(true),
+            Action::InstallUpdate => self.start_install(),
             Action::ToggleWallpaper => {
                 self.cfg.wallpaper_enabled = !self.cfg.wallpaper_enabled;
                 rebuild_wall = true;
@@ -311,11 +398,9 @@ impl App {
                     }
                 }
                 UiAction::OpenAccessibility => platform::open_accessibility_settings(),
-                UiAction::OpenUpdate => {
-                    if let Some((_, url)) = &self.update {
-                        platform::open_url(url);
-                    }
-                }
+                UiAction::OpenUpdate => self.open_release_page(),
+                UiAction::CheckUpdates => self.check_updates(true),
+                UiAction::InstallUpdate => self.start_install(),
             }
         }
         self.refresh(el);
@@ -426,7 +511,7 @@ impl App {
         let mut actions = Vec::new();
         let peers: Vec<String> = self.office.peers.keys().cloned().collect();
         let me = self.me();
-        let update = self.update.as_ref().map(|u| u.0.clone());
+        let upd = self.upd.clone();
         let ask = self.ask.clone();
         let mut view = View {
             cfg: &mut self.cfg,
@@ -434,7 +519,7 @@ impl App {
             me,
             mic: &self.detector.users,
             ask: ask.as_deref(),
-            update: update.as_deref(),
+            update: &upd,
             peers,
             ax_trusted: self.ax_trusted,
             actions: Vec::new(),
@@ -472,7 +557,7 @@ impl App {
             self.office.calls.values().map(|c| (&c.user, c.mine)).collect::<Vec<_>>(),
             self.office.my_call.as_ref().map(|m| m.auto),
             self.office.coffee.as_ref().map(|c| (&c.by, c.mine)),
-            self.update.as_ref().map(|u| &u.0),
+            format!("{:?}", self.upd),
             self.calls_hidden,
             self.coffee_hidden,
             serde_json::to_string(&self.cfg).unwrap_or_default(),
@@ -495,7 +580,7 @@ impl App {
             catalog: &self.catalog,
             monitors: &self.wall.monitors,
             autostart: platform::autostart_enabled(),
-            update: self.update.as_ref().map(|u| u.0.as_str()),
+            update: &self.upd,
             calls_hidden: self.calls_hidden,
             coffee_hidden: self.coffee_hidden,
         });
@@ -588,14 +673,20 @@ impl ApplicationHandler<UserEvent> for App {
         let me = self.me();
         self.send_all(&Packet::Ping { user: Some(me) });
 
+        // notifiche: il clic su quella di aggiornamento avvia l'aggiornamento
+        let click_proxy = std::sync::Mutex::new(self.proxy.clone());
+        notify::init(move || {
+            if let Ok(p) = click_proxy.lock() {
+                let _ = p.send_event(UserEvent::NotificationClicked);
+            }
+        });
+
         // aggiornamenti: subito dopo l'avvio e poi due volte al giorno
         if update::repo().is_some() {
             let proxy = self.proxy.clone();
             let _ = std::thread::Builder::new().name("aggiornamenti".into()).spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(10));
-                if let Some((tag, url)) = update::check() {
-                    let _ = proxy.send_event(UserEvent::Update(tag, url));
-                }
+                let _ = proxy.send_event(UserEvent::CheckDone { manual: false, result: update::fetch() });
                 std::thread::sleep(Duration::from_secs(12 * 3600));
             });
         }
@@ -614,10 +705,30 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Packet(p, from) => self.on_packet(el, p, from),
-            UserEvent::Update(tag, url) => {
-                self.update = Some((tag, url));
-                self.refresh_tray();
+            UserEvent::CheckDone { manual, result } => self.on_check_done(manual, result),
+            UserEvent::NotificationClicked => self.start_install(),
+            UserEvent::InstallPhase(Phase::Installing) => {
+                if let UpdateState::Downloading(r) = &self.upd {
+                    self.upd = UpdateState::Installing(r.clone());
+                }
             }
+            UserEvent::InstallPhase(Phase::Downloading) => {}
+            UserEvent::InstallFailed(reason) => {
+                if let Some(r) = self.upd.release().cloned() {
+                    self.upd = UpdateState::Failed { release: r, reason: reason.clone() };
+                }
+                notify::show(&format!("Aggiornamento non riuscito: {reason}"), false);
+            }
+            UserEvent::InstallDone => {
+                log("Chiusura per l'aggiornamento");
+                self.shutdown();
+                el.exit();
+                return;
+            }
+        }
+        self.refresh_tray();
+        if let Some(s) = self.settings.as_mut() {
+            s.next_paint = Instant::now();
         }
     }
 

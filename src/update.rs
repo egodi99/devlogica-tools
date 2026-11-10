@@ -84,10 +84,57 @@ pub fn fetch() -> Result<Option<Release>, String> {
     }
 }
 
-/// Restituisce (versione, pagina della release) se ce n'è una più recente.
-/// Sostituito dagli stati di aggiornamento (vedi `fetch`).
-pub fn check() -> Option<(String, String)> {
-    fetch().ok().flatten().map(|r| (r.tag, r.page))
+/// Comandi offerti nel menu e nelle Impostazioni.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum UpdateCmd {
+    Check,
+    Install,
+    OpenPage,
+}
+
+/// Dove si trova l'aggiornamento dell'app.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UpdateState {
+    Idle,
+    Checking { manual: bool },
+    Available(Release),
+    Downloading(Release),
+    Installing(Release),
+    Failed { release: Release, reason: String },
+}
+
+impl UpdateState {
+    /// Voci da mostrare: (testo, attiva, comando).
+    pub fn menu_items(&self) -> Vec<(String, bool, Option<UpdateCmd>)> {
+        let check = ("Cerca aggiornamenti".to_string(), true, Some(UpdateCmd::Check));
+        let page = ("Apri la pagina della release".to_string(), true, Some(UpdateCmd::OpenPage));
+        let install = |r: &Release| (format!("Aggiorna alla {}", r.tag), true, Some(UpdateCmd::Install));
+        match self {
+            UpdateState::Idle => vec![check],
+            UpdateState::Checking { .. } => vec![("Controllo in corso…".into(), false, None)],
+            UpdateState::Available(r) if r.asset.is_some() => vec![install(r), check],
+            UpdateState::Available(_) => vec![page, check],
+            UpdateState::Downloading(_) => vec![("Download in corso…".into(), false, None), ("Cerca aggiornamenti".into(), false, None)],
+            UpdateState::Installing(_) => vec![("Installazione…".into(), false, None), ("Cerca aggiornamenti".into(), false, None)],
+            UpdateState::Failed { release, .. } if release.asset.is_some() => vec![install(release), page, check],
+            UpdateState::Failed { .. } => vec![page, check],
+        }
+    }
+
+    /// Vero se si può avviare un aggiornamento adesso (mai due insieme).
+    pub fn can_start(&self) -> bool {
+        match self {
+            UpdateState::Available(r) | UpdateState::Failed { release: r, .. } => r.asset.is_some(),
+            _ => false,
+        }
+    }
+
+    pub fn release(&self) -> Option<&Release> {
+        match self {
+            UpdateState::Available(r) | UpdateState::Downloading(r) | UpdateState::Installing(r) | UpdateState::Failed { release: r, .. } => Some(r),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -132,5 +179,71 @@ mod tests {
         assert!(!should_notify(false, "v1.0.5", "v1.0.5"));
         assert!(should_notify(false, "v1.0.5", "v1.0.4"));
         assert!(should_notify(true, "v1.0.5", "v1.0.5"));
+    }
+
+    fn rel(asset: bool) -> Release {
+        Release { tag: "v1.0.5".into(), page: "p".into(), asset: asset.then(|| Asset { url: "u".into(), size: 1 }) }
+    }
+    fn texts(s: &UpdateState) -> Vec<(String, bool, Option<UpdateCmd>)> {
+        s.menu_items()
+    }
+    use UpdateCmd::*;
+
+    #[test]
+    fn menu_idle() {
+        assert_eq!(texts(&UpdateState::Idle), vec![("Cerca aggiornamenti".into(), true, Some(Check))]);
+    }
+
+    #[test]
+    fn menu_checking() {
+        assert_eq!(texts(&UpdateState::Checking { manual: true }), vec![("Controllo in corso…".into(), false, None)]);
+    }
+
+    #[test]
+    fn menu_available() {
+        assert_eq!(
+            texts(&UpdateState::Available(rel(true))),
+            vec![("Aggiorna alla v1.0.5".into(), true, Some(Install)), ("Cerca aggiornamenti".into(), true, Some(Check))]
+        );
+    }
+
+    #[test]
+    fn menu_downloading() {
+        assert_eq!(
+            texts(&UpdateState::Downloading(rel(true))),
+            vec![("Download in corso…".into(), false, None), ("Cerca aggiornamenti".into(), false, None)]
+        );
+        assert_eq!(texts(&UpdateState::Installing(rel(true)))[0], ("Installazione…".into(), false, None));
+    }
+
+    #[test]
+    fn menu_failed() {
+        let f = UpdateState::Failed { release: rel(true), reason: "x".into() };
+        assert_eq!(
+            texts(&f),
+            vec![
+                ("Aggiorna alla v1.0.5".into(), true, Some(Install)),
+                ("Apri la pagina della release".into(), true, Some(OpenPage)),
+                ("Cerca aggiornamenti".into(), true, Some(Check)),
+            ]
+        );
+    }
+
+    #[test]
+    fn menu_available_senza_asset() {
+        assert_eq!(
+            texts(&UpdateState::Available(rel(false))),
+            vec![("Apri la pagina della release".into(), true, Some(OpenPage)), ("Cerca aggiornamenti".into(), true, Some(Check))]
+        );
+    }
+
+    #[test]
+    fn stato_non_riparte() {
+        assert!(UpdateState::Available(rel(true)).can_start());
+        assert!(UpdateState::Failed { release: rel(true), reason: "x".into() }.can_start());
+        assert!(!UpdateState::Available(rel(false)).can_start());
+        assert!(!UpdateState::Downloading(rel(true)).can_start());
+        assert!(!UpdateState::Installing(rel(true)).can_start());
+        assert!(!UpdateState::Idle.can_start());
     }
 }

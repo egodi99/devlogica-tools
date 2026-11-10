@@ -44,6 +44,8 @@ pub enum UiAction {
     Unignore(String),
     ConfigChanged,
     OpenUpdate,
+    CheckUpdates,
+    InstallUpdate,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     OpenAccessibility,
 }
@@ -55,7 +57,7 @@ pub struct View<'a> {
     pub me: String,
     pub mic: &'a [MicUser],
     pub ask: Option<&'a str>,
-    pub update: Option<&'a str>,
+    pub update: &'a crate::update::UpdateState,
     pub peers: Vec<String>,
     /// Permesso Accessibilità (posizione esatta del Dock per gli indicatori, solo macOS).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -532,10 +534,27 @@ pub fn settings(ui: &mut egui::Ui, v: &mut View) {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.label(RichText::new("DevLogica Tools").size(22.0).strong().color(TEXT));
             ui.label(RichText::new(format!("Versione {}", env!("CARGO_PKG_VERSION"))).size(12.0).color(MUTED));
-            if let Some(tag) = v.update {
-                if ui.link(format!("È disponibile la versione {tag}: scaricala")).clicked() {
-                    v.actions.push(UiAction::OpenUpdate);
+            ui.horizontal_wrapped(|ui| {
+                use crate::update::UpdateCmd;
+                for (text, enabled, cmd) in v.update.menu_items() {
+                    match cmd {
+                        Some(c) if enabled => {
+                            if ui.small_button(text).clicked() {
+                                v.actions.push(match c {
+                                    UpdateCmd::Check => UiAction::CheckUpdates,
+                                    UpdateCmd::Install => UiAction::InstallUpdate,
+                                    UpdateCmd::OpenPage => UiAction::OpenUpdate,
+                                });
+                            }
+                        }
+                        _ => {
+                            ui.label(RichText::new(text).size(12.0).color(MUTED));
+                        }
+                    }
                 }
+            });
+            if let crate::update::UpdateState::Failed { reason, .. } = v.update {
+                ui.label(RichText::new(format!("Aggiornamento non riuscito: {reason}")).size(12.0).color(RED_SOFT));
             }
 
             section(ui, "Il tuo nome");
