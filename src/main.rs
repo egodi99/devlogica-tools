@@ -4,6 +4,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app;
+mod callstats;
 mod config;
 mod detect;
 mod indicators;

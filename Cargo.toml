@@ -21,6 +21,7 @@ egui-winit = { version = "0.36", default-features = false }
 socket2 = { version = "0.6", features = ["all"] }
 if-addrs = "0.15"
 sha2 = "0.11.1"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 
 # Un solo backend grafico per sistema: niente Vulkan/OpenGL caricati inutilmente in memoria.
 [target.'cfg(windows)'.dependencies]
