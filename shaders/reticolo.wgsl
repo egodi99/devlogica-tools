@@ -6,6 +6,12 @@ fn logo_layout() -> vec3f {
     return u.canvas.xyx * vec3f(0.5, 0.5, 0.0) + vec3f(0.0, 0.0, w);
 }
 
+// hash11(0..16) precalcolati (valori esatti del GPU: hanno pochi bit significativi),
+// usati per periodo e sfasamento di ogni impulso: evitano 32 seni per pixel
+const HN = array<f32, 17>(0.40234375, 0.5234375, 0.779296875, 0.62890625, 0.8349609375, 0.5625,
+    0.1015625, 0.19140625, 0.822265625, 0.484375, 0.064453125, 0.177734375, 0.5703125,
+    0.935546875, 0.6640625, 0.75390625, 0.9609375);
+
 fn scene(p: vec2f) -> vec3f {
     let W = u.canvas.x;
     let H = u.canvas.y;
@@ -58,32 +64,39 @@ fn scene(p: vec2f) -> vec3f {
 
     // impulsi che viaggiano lungo le linee del reticolo
     let R = length(u.canvas) / (2.0 * L);
-    for (var n = 0; n < 16; n++) {
-        let fn_ = f32(n);
-        let pd = 9.0 + 6.0 * hash11(fn_ + 1.0);
-        let tt = t + hash11(fn_) * 20.0;
-        let cyc = floor(tt / pd);
-        let lt = tt - cyc * pd;
-        let sd = fn_ * 17.0 + cyc;
-        let famB = hash11(sd) < 0.5;
-        let J = round((hash11(sd + 1.0) - 0.5) * R * 1.4);
-        let i0 = (hash11(sd + 2.0) - 0.5) * R * 1.4;
-        let dir = select(-1.0, 1.0, hash11(sd + 3.0) < 0.5);
-        let speed = (55.0 + 70.0 * hash11(sd + 4.0)) * k / L;
-        let tail = (110.0 + 120.0 * hash11(sd + 5.0)) * k / L;
-        let head = i0 + dir * speed * lt;
-        let along_px = select(gi, gj, famB);
-        let across = select(gj, gi, famB);
-        let back = dir * (head - along_px);
-        let perp = abs(across - J) * sp;
-        let fade = min(1.0, lt / 1.2) * sat((pd - lt) / 1.5);
-        let c = mix(rgb(160.0,70.0,200.0), rgb(90.0,170.0,232.0), sat(p.x / W));
-        if (back >= 0.0 && back <= tail && perp < 6.0 * k) {
-            let f = 1.0 - back / tail;
-            col += mix(c, vec3f(1.0), f * 0.5) * pow(f, 1.6) * fade * stroke(perp, 0.8 + 1.6 * f);
+    let c = mix(rgb(160.0,70.0,200.0), rgb(90.0,170.0,232.0), sat(p.x / W));
+    // un impulso conta solo a meno di 12 px da una linea (oltre, il bagliore vale meno di exp(-9)):
+    // i pixel lontani da tutte le linee saltano l'intero ciclo
+    if (min(dA, dB) <= 12.0 * k) {
+        for (var n = 0; n < 16; n++) {
+            let fn_ = f32(n);
+            let pd = 9.0 + 6.0 * HN[n + 1];
+            let tt = t + HN[n] * 20.0;
+            let cyc = floor(tt / pd);
+            let lt = tt - cyc * pd;
+            let sd = fn_ * 17.0 + cyc;
+            let famB = hash11(sd) < 0.5;
+            let J = round((hash11(sd + 1.0) - 0.5) * R * 1.4);
+            let across = select(gj, gi, famB);
+            let perp = abs(across - J) * sp;
+            // l'impulso vive su una sola linea: lontano da essa scia e bagliore sono nulli,
+            // quindi si salta il resto (e gli altri quattro hash)
+            if (perp > 12.0 * k) { continue; }
+            let i0 = (hash11(sd + 2.0) - 0.5) * R * 1.4;
+            let dir = select(-1.0, 1.0, hash11(sd + 3.0) < 0.5);
+            let speed = (55.0 + 70.0 * hash11(sd + 4.0)) * k / L;
+            let tail = (110.0 + 120.0 * hash11(sd + 5.0)) * k / L;
+            let head = i0 + dir * speed * lt;
+            let along_px = select(gi, gj, famB);
+            let back = dir * (head - along_px);
+            let fade = min(1.0, lt / 1.2) * sat((pd - lt) / 1.5);
+            if (back >= 0.0 && back <= tail && perp < 6.0 * k) {
+                let f = 1.0 - back / tail;
+                col += mix(c, vec3f(1.0), f * 0.5) * pow(f, 1.6) * fade * stroke(perp, 0.8 + 1.6 * f);
+            }
+            let hd = length(vec2f((along_px - head) * L, perp));
+            col += mix(c, vec3f(1.0), 0.6) * 0.8 * fade * glow(hd, 4.0 * k);
         }
-        let hd = length(vec2f((along_px - head) * L, perp));
-        col += mix(c, vec3f(1.0), 0.6) * 0.8 * fade * glow(hd, 4.0 * k);
     }
 
     // alone scuro dietro al logo
