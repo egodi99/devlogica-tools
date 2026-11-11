@@ -18,6 +18,9 @@ dirs = "6"
 egui = "0.36"
 egui-wgpu = { version = "0.36", default-features = false }
 egui-winit = { version = "0.36", default-features = false }
+egui_extras = { version = "0.36", default-features = false, features = ["datepicker"] }
+# Le date del selettore di egui_extras sono di jiff (stessa versione che usa egui_extras).
+jiff = { version = "0.2", default-features = false }
 socket2 = { version = "0.6", features = ["all"] }
 if-addrs = "0.15"
 sha2 = "0.11.1"

@@ -41,10 +41,12 @@ pub fn run_ui(args: &[String]) -> i32 {
         page: String::new(),
         asset: Some(crate::update::Asset { url: String::new(), size: 0, sha256: None }),
     });
-    let mut view = ui::View { cfg: &mut cfg, office: &office, me: "Emanuele".into(), mic: &mic, ask: Some("Microsoft Teams"), update: &upd, peers, ax_trusted: false, actions: Vec::new() };
     // "Le mie call": tratti di esempio nell'ultimo anno, più una call in corso
     use crate::callstats::{Period, PeriodKind};
     let today = chrono::Local::now().date_naive();
+    let mut delete = ui::DeleteForm::new(today);
+    let first_call_day = example_calls(t).iter().map(|s| crate::callstats::local_date(s.start_ms, &chrono::Local)).min();
+    let mut view = ui::View { cfg: &mut cfg, office: &office, me: "Emanuele".into(), mic: &mic, ask: Some("Microsoft Teams"), update: &upd, peers, ax_trusted: false, delete: &mut delete, first_call_day, actions: Vec::new() };
     let kind_stats = match args.get(2).map(String::as_str) {
         Some("giorno") => PeriodKind::Day,
         Some("mese") => PeriodKind::Month,

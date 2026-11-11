@@ -86,6 +86,14 @@ Con *Dimensione dei testi* e *Dimensione del logo* (dal 75% al 200%) li ingrandi
 
 L'app non è firmata con un certificato Apple: **dopo ogni aggiornamento** macOS può chiedere di nuovo il permesso Accessibilità, oppure serve togliere *DevLogica Tools* dall'elenco e aggiungerla di nuovo.
 
+### Le mie call
+L'app tiene il conto delle tue call: quando iniziano, quando finiscono e con quale app (*Manuale* se la avvii dal menu senza un'app riconosciuta).
+Dal menu → *Le mie call…* (o dal pulsante nelle Impostazioni) si apre una finestra con il totale per giorno, settimana, mese e anno, il grafico, la media per giorno lavorativo e il tempo per app.
+- **Solo sul tuo PC**: i dati stanno in `call.json`, nella cartella dell'app (vedi *Log* più sotto), e non vengono mai inviati ai colleghi né scritti nel log.
+- **Interruttore**: in **Impostazioni → Le mie call** la casella *Registra le mie call* (attiva di default) ferma o riprende la registrazione. Lo storico già salvato resta e si può ancora guardare.
+- **Cancellare lo storico**: *Cancella lo storico…* → scegli *Dal* e *Al* (giorni interi, estremi compresi) o premi *Tutto*, poi *Cancella*. L'app dice quante call e quanto tempo toglie e chiede conferma. Una call a cavallo di un estremo viene tagliata: resta la parte fuori dall'intervallo. La cancellazione è definitiva.
+- **Sospensione**: se il PC va in sospensione durante una call, il tempo in cui è rimasto sospeso non conta.
+
 ### Aggiornamenti
 L'app controlla da sola se c'è una versione nuova, all'avvio e due volte al giorno; dal menu **Cerca aggiornamenti** controlla subito.
 Quando c'è una versione nuova compare una notifica di sistema e nel menu la voce **Aggiorna alla vX.Y.Z**: un clic e l'app scarica la versione nuova, si sostituisce e si riavvia.
@@ -145,7 +153,7 @@ Apri le **Impostazioni** durante la call: in *Microfono in uso adesso* vedi cosa
 - **Windows**: `%APPDATA%\DevLogica Tools\log.txt`
 - **macOS**: `~/Library/Application Support/DevLogica Tools/log.txt`
 
-Nella stessa cartella ci sono le impostazioni (`config.json`) e la cartella `sfondi` per gli sfondi personalizzati.
+Nella stessa cartella ci sono le impostazioni (`config.json`), lo storico delle tue call (`call.json`) e la cartella `sfondi` per gli sfondi personalizzati.
 Al primo avvio vengono importate le impostazioni e gli sfondi di DevLogica Wallpaper, se presenti.
 
 ---
@@ -199,6 +207,9 @@ src/office.rs        stato dell'ufficio: call e pausa caffè (con test)
 src/net.rs           protocollo UDP compatibile con Call Alert (con test)
 src/detect.rs        riconoscimento delle call dal microfono (con test)
 src/ui.rs            finestre egui: avviso call, caffè, conferma, impostazioni, bordo rosso
+src/callstats.rs     statistiche delle mie call: periodi, totali, grafico, formati (con test)
+src/callstore.rs     archivio delle mie call in call.json, salvataggio atomico (con test)
+src/statsui.rs       finestra "Le mie call" (egui)
 src/tray.rs          menu e icona della barra di sistema
 src/wallpaper.rs     sfondi animati per schermo e modalità multimonitor
 src/render.rs        GPU (wgpu): shader degli sfondi e logo

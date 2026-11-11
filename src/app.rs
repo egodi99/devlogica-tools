@@ -61,6 +61,8 @@ pub struct App {
     /// Finestra "Le mie call" e periodo mostrato.
     stats_win: Option<UiWin>,
     stats_period: Period,
+    /// Modulo "Cancella lo storico…" nelle Impostazioni.
+    delete: ui::DeleteForm,
     edges: Vec<Edge>,
     calls_hidden: bool,
     coffee_hidden: bool,
@@ -109,6 +111,7 @@ impl App {
             ask_win: None,
             stats_win: None,
             stats_period: Period::containing(PeriodKind::Week, chrono::Local::now().date_naive()),
+            delete: ui::DeleteForm::new(chrono::Local::now().date_naive()),
             edges: Vec::new(),
             calls_hidden: false,
             coffee_hidden: false,
@@ -439,6 +442,22 @@ impl App {
                 UiAction::OpenUpdate => self.open_release_page(),
                 UiAction::CheckUpdates => self.check_updates(true),
                 UiAction::InstallUpdate => self.start_install(),
+                UiAction::OpenCallStats => self.open_call_stats(el),
+                UiAction::PreviewDelete => {
+                    let f = &mut self.delete;
+                    f.confirm = Some(self.store.preview_delete(f.from, f.to, now_ms(), &chrono::Local));
+                    self.repaint_settings();
+                }
+                UiAction::DeleteCalls => {
+                    let f = &mut self.delete;
+                    self.store.delete_range(f.from, f.to, now_ms(), &chrono::Local);
+                    f.open = false;
+                    f.confirm = None;
+                    self.repaint_settings();
+                    if let Some(w) = self.stats_win.as_mut() {
+                        w.next_paint = Instant::now();
+                    }
+                }
             }
         }
         self.refresh(el);
@@ -487,6 +506,12 @@ impl App {
             // disegna subito il primo fotogramma: è lì che la finestra diventa visibile
             Some(s) => s.next_paint = Instant::now(),
             None => log("Impossibile aprire la finestra delle impostazioni"),
+        }
+    }
+
+    fn repaint_settings(&mut self) {
+        if let Some(w) = self.settings.as_mut() {
+            w.next_paint = Instant::now();
         }
     }
 
@@ -580,6 +605,7 @@ impl App {
         let me = self.me();
         let upd = self.upd.clone();
         let ask = self.ask.clone();
+        let first_call_day = self.store.first_day(&chrono::Local);
         let mut view = View {
             cfg: &mut self.cfg,
             office: &self.office,
@@ -589,6 +615,8 @@ impl App {
             update: &upd,
             peers,
             ax_trusted: self.ax_trusted,
+            delete: &mut self.delete,
+            first_call_day,
             actions: Vec::new(),
         };
         let today = chrono::Local::now().date_naive();

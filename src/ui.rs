@@ -2,6 +2,7 @@
 //! impostazioni. Esistono solo quando sono visibili, così l'app resta leggera.
 
 use crate::config::{AlertStyle, Config, Detection};
+use chrono::{Datelike, NaiveDate};
 use crate::detect::MicUser;
 use crate::office::Office;
 use crate::render::{Gpu, Target};
@@ -46,6 +47,12 @@ pub enum UiAction {
     OpenUpdate,
     CheckUpdates,
     InstallUpdate,
+    /// Apre la finestra "Le mie call".
+    OpenCallStats,
+    /// Calcola quante call toglierebbe la cancellazione (riempie `DeleteForm::confirm`).
+    PreviewDelete,
+    /// Cancella davvero l'intervallo scelto.
+    DeleteCalls,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     OpenAccessibility,
 }
@@ -62,7 +69,27 @@ pub struct View<'a> {
     /// Permesso Accessibilità (posizione esatta del Dock per gli indicatori, solo macOS).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub ax_trusted: bool,
+    /// Modulo "Cancella lo storico…" (resta all'app tra un disegno e l'altro).
+    pub delete: &'a mut DeleteForm,
+    /// Primo giorno con una call registrata, per il pulsante "Tutto".
+    pub first_call_day: Option<NaiveDate>,
     pub actions: Vec<UiAction>,
+}
+
+/// Stato del modulo "Cancella lo storico…": intervallo scelto (estremi compresi) e, dopo
+/// `PreviewDelete`, quante call e quanto tempo verrebbero cancellati.
+pub struct DeleteForm {
+    pub from: NaiveDate,
+    pub to: NaiveDate,
+    pub open: bool,
+    pub confirm: Option<(usize, f64)>,
+}
+
+impl DeleteForm {
+    /// Modulo chiuso; di default dal primo giorno del mese a oggi.
+    pub fn new(today: NaiveDate) -> Self {
+        Self { from: today.with_day(1).unwrap_or(today), to: today, open: false, confirm: None }
+    }
 }
 
 // ============================================================================
@@ -531,6 +558,90 @@ fn indicators_section(ui: &mut egui::Ui, v: &mut View) {
     });
 }
 
+fn to_jiff(d: NaiveDate) -> jiff::civil::Date {
+    jiff::civil::Date::new(d.year() as i16, d.month() as i8, d.day() as i8).unwrap_or_default()
+}
+
+fn from_jiff(d: jiff::civil::Date, prima: NaiveDate) -> NaiveDate {
+    NaiveDate::from_ymd_opt(d.year() as i32, d.month() as u32, d.day() as u32).unwrap_or(prima)
+}
+
+/// Selettore di una data (gg/mm/aaaa). Restituisce true se è cambiata.
+fn date_field(ui: &mut egui::Ui, id: &str, d: &mut NaiveDate) -> bool {
+    let mut j = to_jiff(*d);
+    ui.add(egui_extras::DatePickerButton::new(&mut j).id_salt(id).format("%d/%m/%Y").calendar_week(false));
+    let nuova = from_jiff(j, *d);
+    let cambiata = nuova != *d;
+    *d = nuova;
+    cambiata
+}
+
+/// "Le mie call": finestra, interruttore della registrazione e cancellazione dello storico.
+fn my_calls_section(ui: &mut egui::Ui, v: &mut View) {
+    section(ui, "Le mie call");
+    if ui.small_button("Le mie call…").clicked() {
+        v.actions.push(UiAction::OpenCallStats);
+    }
+    ui.checkbox(&mut v.cfg.record_calls, "Registra le mie call");
+    let f = &mut *v.delete;
+    if ui.small_button("Cancella lo storico…").clicked() {
+        if f.open {
+            f.open = false;
+        } else {
+            *f = DeleteForm { open: true, ..DeleteForm::new(chrono::Local::now().date_naive()) };
+        }
+    }
+    if !f.open {
+        return;
+    }
+    // durante la conferma l'intervallo resta bloccato: il testo deve corrispondere
+    let in_conferma = f.confirm.is_some_and(|(n, _)| n > 0);
+    ui.add_enabled_ui(!in_conferma, |ui| {
+        ui.horizontal(|ui| {
+            let mut cambiato = false;
+            ui.label("Dal");
+            cambiato |= date_field(ui, "cancella_dal", &mut f.from);
+            ui.label("Al");
+            cambiato |= date_field(ui, "cancella_al", &mut f.to);
+            let tutto = ui.add_enabled(v.first_call_day.is_some(), egui::Button::new("Tutto").small());
+            if tutto.clicked() {
+                if let Some(d) = v.first_call_day {
+                    f.from = d;
+                    f.to = chrono::Local::now().date_naive();
+                    cambiato = true;
+                }
+            }
+            if f.from > f.to {
+                std::mem::swap(&mut f.from, &mut f.to);
+            }
+            if cambiato {
+                f.confirm = None;
+            }
+            if ui.small_button("Cancella").clicked() {
+                v.actions.push(UiAction::PreviewDelete);
+            }
+        });
+    });
+    match f.confirm {
+        Some((0, _)) => {
+            ui.label(RichText::new("Nessuna call in questo intervallo").italics().color(MUTED));
+        }
+        Some((n, ms)) => {
+            ui.label(RichText::new(crate::callstats::confirm_text(n, ms, f.from, f.to)).color(RED_SOFT));
+            ui.horizontal(|ui| {
+                if ui.small_button("Cancella").clicked() {
+                    v.actions.push(UiAction::DeleteCalls);
+                }
+                if ui.small_button("Annulla").clicked() {
+                    f.confirm = None;
+                    f.open = false;
+                }
+            });
+        }
+        None => {}
+    }
+}
+
 pub fn settings(ui: &mut egui::Ui, v: &mut View) {
     let before = v.cfg.clone();
     egui::Frame::new().fill(INK).inner_margin(18.0).show(ui, |ui| {
@@ -579,6 +690,8 @@ pub fn settings(ui: &mut egui::Ui, v: &mut View) {
                 ui.label("Volume del suono");
                 ui.add(egui::Slider::new(&mut v.cfg.volume, 0.0..=1.0).show_value(false));
             });
+
+            my_calls_section(ui, v);
 
             #[cfg(target_os = "macos")]
             indicators_section(ui, v);

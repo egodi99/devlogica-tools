@@ -369,10 +369,25 @@ pub fn report<Tz: TimeZone>(segs: &[Segment], p: Period, today: NaiveDate, tz: &
     }
 }
 
-// Usati dalla cancellazione dello storico (Impostazioni, Task 6), che toglie #[cfg(test)].
+/// Testo di conferma della cancellazione: "Cancellare 37 call (21 h 40 min) dal 1° al 31
+/// ottobre 2026?". Mese e anno si ripetono solo quando cambiano.
+pub fn confirm_text(calls: usize, ms: f64, from: NaiveDate, to: NaiveDate) -> String {
+    let da = if from.year() != to.year() {
+        format!("{} {}", giorno_mese(from), from.year())
+    } else if from.month() != to.month() {
+        giorno_mese(from)
+    } else {
+        num(from)
+    };
+    format!(
+        "Cancellare {calls} call ({}) dal {da} al {} {}?",
+        fmt_duration(ms),
+        giorno_mese(to),
+        to.year()
+    )
+}
 
 /// Risultato di `cut_range`: i tratti che restano e quanto è stato tolto.
-#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Cut {
     pub kept: Vec<Segment>,
@@ -383,7 +398,6 @@ pub struct Cut {
 
 /// Toglie dai tratti la parte tra l'inizio di `from` e la fine di `to` (giorni compresi).
 /// Un tratto può restare intero, accorciarsi o dividersi in due.
-#[cfg(test)]
 pub fn cut_range<Tz: TimeZone>(segs: &[Segment], from: NaiveDate, to: NaiveDate, tz: &Tz) -> Cut {
     let da = day_start_ms(from, tz);
     let a = day_start_ms(to + Duration::days(1), tz);
@@ -681,5 +695,21 @@ mod tests {
         assert_eq!(cut.kept[0].end_ms, ms(2026, 11, 2, 0, 0));
         assert_eq!(cut.kept[1].start_ms, ms(2026, 11, 3, 0, 0));
         assert_eq!(cut.removed_ms, 24.0 * H);
+    }
+
+    #[test]
+    fn testo_conferma() {
+        assert_eq!(
+            confirm_text(37, 78_000_000.0, date(2026, 10, 1), date(2026, 10, 31)),
+            "Cancellare 37 call (21 h 40 min) dal 1° al 31 ottobre 2026?"
+        );
+        assert_eq!(
+            confirm_text(37, 78_000_000.0, date(2026, 9, 28), date(2026, 10, 3)),
+            "Cancellare 37 call (21 h 40 min) dal 28 settembre al 3 ottobre 2026?"
+        );
+        assert_eq!(
+            confirm_text(37, 78_000_000.0, date(2025, 12, 30), date(2026, 1, 2)),
+            "Cancellare 37 call (21 h 40 min) dal 30 dicembre 2025 al 2 gennaio 2026?"
+        );
     }
 }
