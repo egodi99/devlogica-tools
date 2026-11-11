@@ -1,11 +1,14 @@
 //! Coordinatore: sfondi, rete, riconoscimento call, finestre di avviso e menu.
 
-use crate::config::{log, AlertStyle, Config, Detection};
+use crate::callstats::{self, Period, PeriodKind};
+use crate::callstore::CallStore;
+use crate::config::{app_dir, log, now_ms, AlertStyle, Config, Detection};
 use crate::detect::{Detect, Detector};
 use crate::net::{Net, Packet};
 use crate::office::{Notice, Office, Outgoing};
 use crate::render::Gpu;
 use crate::sound::{self, Chime};
+use crate::statsui::{self, StatsAction};
 use crate::tray::{self, Action, Badge, MenuState};
 use crate::ui::{self, Edge, UiAction, UiWin, View};
 use crate::wallpaper::{IndicatorState, Wallpapers};
@@ -55,6 +58,11 @@ pub struct App {
     call_win: Option<UiWin>,
     coffee_win: Option<UiWin>,
     ask_win: Option<UiWin>,
+    /// Finestra "Le mie call" e periodo mostrato.
+    stats_win: Option<UiWin>,
+    stats_period: Period,
+    /// Modulo "Cancella lo storico…" nelle Impostazioni.
+    delete: ui::DeleteForm,
     edges: Vec<Edge>,
     calls_hidden: bool,
     coffee_hidden: bool,
@@ -69,6 +77,8 @@ pub struct App {
     next_check: Instant,
     next_detect: Instant,
     next_alive: Instant,
+    /// Archivio delle mie call (solo su questo PC).
+    store: CallStore,
     next_edge: Instant,
     fullscreen: bool,
     // indicatori sullo sfondo (solo macOS)
@@ -99,6 +109,9 @@ impl App {
             call_win: None,
             coffee_win: None,
             ask_win: None,
+            stats_win: None,
+            stats_period: Period::containing(PeriodKind::Week, chrono::Local::now().date_naive()),
+            delete: ui::DeleteForm::new(chrono::Local::now().date_naive()),
             edges: Vec::new(),
             calls_hidden: false,
             coffee_hidden: false,
@@ -110,6 +123,7 @@ impl App {
             next_check: now + Duration::from_secs(2),
             next_detect: now + Duration::from_secs(2),
             next_alive: now + Duration::from_secs(20),
+            store: CallStore::load(app_dir().join("call.json")),
             next_edge: now,
             fullscreen: false,
             sampler: None,
@@ -239,6 +253,12 @@ impl App {
         let me = self.me();
         let (notices, out) = self.office.handle(p, from, &me);
         self.send_out(out);
+        self.show_notices(notices);
+        self.refresh(el);
+    }
+
+    /// Avvisi nuovi: riapre la finestra e suona. Durante la mia call arrivano già filtrati.
+    fn show_notices(&mut self, notices: Vec<Notice>) {
         for n in notices {
             match n {
                 Notice::CallStarted { user } => {
@@ -254,7 +274,6 @@ impl App {
                 Notice::CallsChanged | Notice::CoffeeChanged => {}
             }
         }
-        self.refresh(el);
     }
 
     // ------------------------------------------------------------------ azioni
@@ -264,7 +283,13 @@ impl App {
         if let Some(p) = self.office.start_my_call(&me, app.clone(), auto) {
             log(format!("Inizio call ({}){}", app.as_deref().unwrap_or("manuale"), if auto { " rilevata in automatico" } else { "" }));
             self.send_all(&p);
+            for p in self.office.enter_dnd(&me) {
+                self.send_all(&p);
+            }
             self.next_alive = Instant::now() + Duration::from_secs(20);
+            if self.cfg.record_calls {
+                self.store.begin(app.as_deref(), auto, now_ms());
+            }
         }
         self.refresh(el);
     }
@@ -273,6 +298,12 @@ impl App {
         if let Some(p) = self.office.end_my_call() {
             log("Fine call");
             self.send_all(&p);
+            let (notices, out) = self.office.leave_dnd(&self.me());
+            for p in out {
+                self.send_all(&p);
+            }
+            self.show_notices(notices);
+            self.store.end(now_ms());
         }
         self.refresh(el);
     }
@@ -295,6 +326,7 @@ impl App {
                 }
             }
             Action::ShowCoffee => self.coffee_hidden = false,
+            Action::OpenCallStats => self.open_call_stats(el),
             Action::OpenSettings => self.open_settings(el),
             Action::OpenUpdate => self.open_release_page(),
             Action::CheckUpdates => self.check_updates(true),
@@ -351,7 +383,7 @@ impl App {
         self.refresh(el);
     }
 
-    fn handle_ui(&mut self, el: &ActiveEventLoop, actions: Vec<UiAction>, old_name: &str) {
+    fn handle_ui(&mut self, el: &ActiveEventLoop, actions: Vec<UiAction>, old_name: &str, old_record: bool) {
         let me = self.me();
         for a in actions {
             match a {
@@ -388,6 +420,13 @@ impl App {
                 }
                 UiAction::ConfigChanged => {
                     self.cfg.save();
+                    if self.cfg.record_calls != old_record {
+                        if !self.cfg.record_calls {
+                            self.store.end(now_ms());
+                        } else if let Some(m) = self.office.my_call.as_ref() {
+                            self.store.begin(m.app.as_deref(), m.auto, now_ms());
+                        }
+                    }
                     if self.me() != old_name {
                         // nome cambiato: se ero in call la ri-annuncio con il nome nuovo
                         let me = self.me();
@@ -401,6 +440,22 @@ impl App {
                 UiAction::OpenUpdate => self.open_release_page(),
                 UiAction::CheckUpdates => self.check_updates(true),
                 UiAction::InstallUpdate => self.start_install(),
+                UiAction::OpenCallStats => self.open_call_stats(el),
+                UiAction::PreviewDelete => {
+                    let f = &mut self.delete;
+                    f.confirm = Some(self.store.preview_delete(f.from, f.to, now_ms(), &chrono::Local));
+                    self.repaint_settings();
+                }
+                UiAction::DeleteCalls => {
+                    let f = &mut self.delete;
+                    self.store.delete_range(f.from, f.to, now_ms(), &chrono::Local);
+                    f.open = false;
+                    f.confirm = None;
+                    self.repaint_settings();
+                    if let Some(w) = self.stats_win.as_mut() {
+                        w.next_paint = Instant::now();
+                    }
+                }
             }
         }
         self.refresh(el);
@@ -410,7 +465,11 @@ impl App {
         let me = self.me();
         if let Some(p) = self.office.end_my_call() {
             self.send_all(&p);
+            for p in self.office.leave_dnd(&me).1 {
+                self.send_all(&p);
+            }
         }
+        self.store.end(now_ms());
         if let Some(p) = self.office.end_coffee(&me) {
             self.send_all(&p);
         }
@@ -419,6 +478,8 @@ impl App {
         self.coffee_win = None;
         self.ask_win = None;
         self.settings = None;
+        self.delete = ui::DeleteForm::new(chrono::Local::now().date_naive());
+        self.stats_win = None;
         self.edges.clear();
     }
 
@@ -445,13 +506,40 @@ impl App {
         }
     }
 
+    fn repaint_settings(&mut self) {
+        if let Some(w) = self.settings.as_mut() {
+            w.next_paint = Instant::now();
+        }
+    }
+
+    /// Finestra "Le mie call": si apre sulla settimana in corso.
+    fn open_call_stats(&mut self, el: &ActiveEventLoop) {
+        if let Some(s) = &self.stats_win {
+            s.focus();
+            return;
+        }
+        let (Some(gpu), Some(m)) = (self.gpu.as_ref(), Self::primary(el)) else { return };
+        let (w, h) = ui::logical_size(&m);
+        let (ww, wh) = (560.0, 640.0f64.min(h - 80.0));
+        let attrs = ui::attrs_on(&m, (w - ww) / 2.0, (h - wh) / 2.0, ww, wh).with_title("DevLogica Tools – Le mie call").with_resizable(false);
+        self.stats_period = Period::containing(PeriodKind::Week, chrono::Local::now().date_naive());
+        self.stats_win = UiWin::new(el, gpu, attrs, false);
+        match &mut self.stats_win {
+            // disegna subito il primo fotogramma: è lì che la finestra diventa visibile
+            Some(s) => s.next_paint = Instant::now(),
+            None => log("Impossibile aprire la finestra delle mie call"),
+        }
+    }
+
     /// Mostra o nasconde le finestre di avviso in base allo stato attuale.
     fn refresh(&mut self, el: &ActiveEventLoop) {
         let others = self.office.others().len();
         let style = self.cfg.alert_style;
-        let want_panel = others > 0 && !self.calls_hidden && style != AlertStyle::Tray;
-        let want_edges = others > 0 && !self.calls_hidden && style == AlertStyle::Full;
-        let want_coffee = self.office.coffee.is_some() && !self.coffee_hidden;
+        // Non disturbare: mentre sono in call niente avvisi dei colleghi (resta solo l'icona).
+        let dnd = self.office.dnd();
+        let want_panel = others > 0 && !self.calls_hidden && !dnd && style != AlertStyle::Tray;
+        let want_edges = others > 0 && !self.calls_hidden && !dnd && style == AlertStyle::Full;
+        let want_coffee = self.office.coffee.as_ref().is_some_and(|c| c.mine || !dnd) && !self.coffee_hidden;
         let want_ask = self.ask.is_some();
         let primary = Self::primary(el);
 
@@ -508,11 +596,13 @@ impl App {
         let Some(gpu) = self.gpu.as_ref() else { return };
         let now = Instant::now();
         let old_name = self.me();
+        let old_record = self.cfg.record_calls;
         let mut actions = Vec::new();
         let peers: Vec<String> = self.office.peers.keys().cloned().collect();
         let me = self.me();
         let upd = self.upd.clone();
         let ask = self.ask.clone();
+        let first_call_day = self.store.first_day(&chrono::Local);
         let mut view = View {
             cfg: &mut self.cfg,
             office: &self.office,
@@ -522,9 +612,14 @@ impl App {
             update: &upd,
             peers,
             ax_trusted: self.ax_trusted,
+            delete: &mut self.delete,
+            first_call_day,
             actions: Vec::new(),
         };
-        for (win, kind) in [(&mut self.call_win, 0), (&mut self.coffee_win, 1), (&mut self.ask_win, 2), (&mut self.settings, 3)] {
+        let today = chrono::Local::now().date_naive();
+        let period = self.stats_period;
+        let mut stats_action = None;
+        for (win, kind) in [(&mut self.call_win, 0), (&mut self.coffee_win, 1), (&mut self.ask_win, 2), (&mut self.settings, 3), (&mut self.stats_win, 4)] {
             let Some(w) = win.as_mut() else { continue };
             if !force && now < w.next_paint {
                 continue;
@@ -533,12 +628,33 @@ impl App {
                 0 => w.paint(gpu, ui::RED_BG, |u| ui::call_panel(u, &mut view)),
                 1 => w.paint(gpu, ui::COFFEE_BG, |u| ui::coffee_panel(u, &mut view)),
                 2 => w.paint(gpu, ui::INK, |u| ui::ask_panel(u, &mut view)),
-                _ => w.paint(gpu, ui::INK, |u| ui::settings(u, &mut view)),
+                3 => w.paint(gpu, ui::INK, |u| ui::settings(u, &mut view)),
+                _ => {
+                    // il report si ricalcola a ogni disegno: la call in corso cresce da sola
+                    let rep = callstats::report(&self.store.snapshot(now_ms()), period, today, &chrono::Local);
+                    let (recording, live) = (view.cfg.record_calls, self.store.is_open());
+                    w.paint(gpu, ui::INK, |u| {
+                        if let Some(a) = statsui::stats_panel(u, period, today, &rep, recording, live) {
+                            stats_action = Some(a);
+                        }
+                    });
+                }
             }
         }
         actions.append(&mut view.actions);
+        if let Some(a) = stats_action {
+            self.stats_period = match a {
+                StatsAction::Kind(k) => Period::containing(k, today),
+                StatsAction::Prev => period.prev(),
+                StatsAction::Next if period.can_go_next(today) => period.next(),
+                StatsAction::Next => period,
+            };
+            if let Some(w) = self.stats_win.as_mut() {
+                w.next_paint = Instant::now();
+            }
+        }
         if !actions.is_empty() {
-            self.handle_ui(el, actions, &old_name);
+            self.handle_ui(el, actions, &old_name, old_record);
         }
     }
 
@@ -741,9 +857,14 @@ impl ApplicationHandler<UserEvent> for App {
         let is = |w: &Option<UiWin>| w.as_ref().map(|w| w.window.id() == id).unwrap_or(false);
         if is(&self.settings) && matches!(event, WindowEvent::CloseRequested) {
             self.settings = None;
+            self.delete = ui::DeleteForm::new(chrono::Local::now().date_naive());
             return;
         }
-        for w in [&mut self.settings, &mut self.call_win, &mut self.coffee_win, &mut self.ask_win].into_iter().flatten() {
+        if is(&self.stats_win) && matches!(event, WindowEvent::CloseRequested) {
+            self.stats_win = None;
+            return;
+        }
+        for w in [&mut self.settings, &mut self.stats_win, &mut self.call_win, &mut self.coffee_win, &mut self.ask_win].into_iter().flatten() {
             if w.window.id() == id {
                 w.on_event(gpu, &event);
                 if matches!(event, WindowEvent::RedrawRequested) {
@@ -793,6 +914,9 @@ impl ApplicationHandler<UserEvent> for App {
             if let Some(p) = self.office.alive_packet(&me) {
                 self.send_all(&p);
             }
+            if self.cfg.record_calls {
+                self.store.touch(now_ms());
+            }
         }
 
         // sfondi
@@ -829,7 +953,7 @@ impl ApplicationHandler<UserEvent> for App {
         if !self.edges.is_empty() {
             wake = wake.min(self.next_edge);
         }
-        for w in [&self.settings, &self.call_win, &self.coffee_win, &self.ask_win].into_iter().flatten() {
+        for w in [&self.settings, &self.stats_win, &self.call_win, &self.coffee_win, &self.ask_win].into_iter().flatten() {
             wake = wake.min(w.next_paint);
         }
         el.set_control_flow(ControlFlow::WaitUntil(wake.max(Instant::now() + Duration::from_millis(5))));

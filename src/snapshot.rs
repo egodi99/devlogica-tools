@@ -5,14 +5,16 @@
 use crate::render::{self, Gpu, Params};
 use crate::wallpapers;
 
-/// Anteprima delle finestre con dati di esempio:  --ui <call|caffe|conferma|impostazioni> <file.png>
+/// Anteprima delle finestre con dati di esempio:
+///   --ui <call|caffe|conferma|impostazioni> <file.png>
+///   --ui statistiche <file.png> [giorno|mese|anno]   (senza argomento: settimana)
 pub fn run_ui(args: &[String]) -> i32 {
     use crate::config::{now_ms, Config};
     use crate::detect::MicUser;
     use crate::office::Office;
     use crate::ui;
     let (Some(kind), Some(out)) = (args.first(), args.get(1)) else {
-        eprintln!("uso: --ui <call|caffe|conferma|impostazioni> <file.png>");
+        eprintln!("uso: --ui <call|caffe|conferma|impostazioni|statistiche> <file.png> [giorno|mese|anno]");
         return 2;
     };
     let Ok(gpu) = Gpu::new(render::new_instance(), None) else { return 1 };
@@ -26,6 +28,7 @@ pub fn run_ui(args: &[String]) -> i32 {
     office.handle(crate::net::Packet::CoffeeStart { user: "Marco".into(), in_minutes: Some(5) }, ip, "Emanuele");
     office.handle(crate::net::Packet::CoffeeRsvp { user: "Anna".into(), answer: "yes".into() }, ip, "Emanuele");
     office.handle(crate::net::Packet::CoffeeRsvp { user: "Luca".into(), answer: "no".into() }, ip, "Emanuele");
+    office.handle(crate::net::Packet::CoffeeRsvp { user: "Giulia".into(), answer: crate::office::IN_CALL.into() }, ip, "Emanuele");
     office.peers.insert("Marco".into(), ip);
     office.peers.insert("Anna".into(), ip);
     let mic = vec![
@@ -36,14 +39,28 @@ pub fn run_ui(args: &[String]) -> i32 {
     let upd = crate::update::UpdateState::Available(crate::update::Release {
         tag: "v1.1.0".into(),
         page: String::new(),
-        asset: Some(crate::update::Asset { url: String::new(), size: 0 }),
+        asset: Some(crate::update::Asset { url: String::new(), size: 0, sha256: None }),
     });
-    let mut view = ui::View { cfg: &mut cfg, office: &office, me: "Emanuele".into(), mic: &mic, ask: Some("Microsoft Teams"), update: &upd, peers, ax_trusted: false, actions: Vec::new() };
+    // "Le mie call": tratti di esempio nell'ultimo anno, più una call in corso
+    use crate::callstats::{Period, PeriodKind};
+    let today = chrono::Local::now().date_naive();
+    let mut delete = ui::DeleteForm::new(today);
+    let first_call_day = example_calls(t).iter().map(|s| crate::callstats::local_date(s.start_ms, &chrono::Local)).min();
+    let mut view = ui::View { cfg: &mut cfg, office: &office, me: "Emanuele".into(), mic: &mic, ask: Some("Microsoft Teams"), update: &upd, peers, ax_trusted: false, delete: &mut delete, first_call_day, actions: Vec::new() };
+    let kind_stats = match args.get(2).map(String::as_str) {
+        Some("giorno") => PeriodKind::Day,
+        Some("mese") => PeriodKind::Month,
+        Some("anno") => PeriodKind::Year,
+        _ => PeriodKind::Week,
+    };
+    let period = Period::containing(kind_stats, today);
+    let rep = crate::callstats::report(&example_calls(t), period, today, &chrono::Local);
     let ppp = 2.0;
     let (w, h, bg): (f64, f64, _) = match kind.as_str() {
         "call" => (540.0, ui::call_panel_height(3), ui::RED_BG),
-        "caffe" => (420.0, ui::coffee_panel_height(2), ui::COFFEE_BG),
+        "caffe" => (420.0, ui::coffee_panel_height(3), ui::COFFEE_BG),
         "conferma" => (380.0, 140.0, ui::INK),
+        "statistiche" => (560.0, 640.0, ui::INK),
         _ => (500.0, 900.0, ui::INK),
     };
     let (pw, ph) = ((w * ppp as f64) as u32, (h * ppp as f64) as u32);
@@ -51,6 +68,9 @@ pub fn run_ui(args: &[String]) -> i32 {
         "call" => ui::call_panel(u, &mut view),
         "caffe" => ui::coffee_panel(u, &mut view),
         "conferma" => ui::ask_panel(u, &mut view),
+        "statistiche" => {
+            let _ = crate::statsui::stats_panel(u, period, today, &rep, true, true);
+        }
         _ => ui::settings(u, &mut view),
     });
     match image::save_buffer(out, &px, pw, ph, image::ExtendedColorType::Rgba8) {
@@ -60,6 +80,39 @@ pub fn run_ui(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// Call di esempio per l'anteprima: giorni lavorativi dell'ultimo anno con Teams, Slack e
+/// Meet (durate pseudo-casuali ma fisse), più una call Teams in corso da 25 minuti.
+fn example_calls(now: f64) -> Vec<crate::callstats::Segment> {
+    use chrono::{Datelike, TimeZone};
+    let today = chrono::Local::now().date_naive();
+    let mut v = Vec::new();
+    let mut seed: u32 = 7;
+    let mut rnd = move || {
+        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        (seed >> 16) % 1000
+    };
+    for back in (0..400).rev() {
+        let d = today - chrono::Duration::days(back);
+        if d.weekday().num_days_from_monday() >= 5 {
+            continue;
+        }
+        for (app, h, m, base, spread) in [("Microsoft Teams", 9, 30, 30, 90), ("Slack", 14, 0, 10, 50), ("Google Meet (Chrome)", 16, 15, 0, 45)] {
+            let min = base + rnd() * spread / 1000;
+            if min < 5 {
+                continue;
+            }
+            let Some(start) = chrono::Local.from_local_datetime(&d.and_hms_opt(h, m, 0).expect("ora valida")).earliest() else { continue };
+            let start_ms = start.timestamp_millis() as f64;
+            let end_ms = start_ms + min as f64 * 60_000.0;
+            if end_ms < now - 30.0 * 60_000.0 {
+                v.push(crate::callstats::Segment { start_ms, end_ms, app: app.into(), auto: true });
+            }
+        }
+    }
+    v.push(crate::callstats::Segment { start_ms: now - 25.0 * 60_000.0, end_ms: now, app: "Microsoft Teams".into(), auto: true });
+    v
 }
 
 pub fn run(args: &[String]) -> i32 {

@@ -27,6 +27,8 @@ pub const ASSET_NAME: &str = "DevLogica-Tools-macOS.zip";
 pub struct Asset {
     pub url: String,
     pub size: u64,
+    /// SHA-256 calcolato da GitHub al caricamento (campo `digest`), in esadecimale minuscolo.
+    pub sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -49,7 +51,8 @@ pub fn parse_release(json: &str, asset_name: &str) -> Option<Release> {
     let page = v.get("html_url").and_then(|x| x.as_str()).unwrap_or_default().to_string();
     let asset = v.get("assets").and_then(|a| a.as_array()).and_then(|list| {
         list.iter().find(|a| a.get("name").and_then(|n| n.as_str()) == Some(asset_name)).and_then(|a| {
-            Some(Asset { url: a.get("browser_download_url")?.as_str()?.to_string(), size: a.get("size")?.as_u64()? })
+            let sha256 = a.get("digest").and_then(|d| d.as_str()).and_then(|d| d.strip_prefix("sha256:")).map(|h| h.to_ascii_lowercase());
+            Some(Asset { url: a.get("browser_download_url")?.as_str()?.to_string(), size: a.get("size")?.as_u64()?, sha256 })
         })
     });
     Some(Release { tag, page, asset })
@@ -150,15 +153,24 @@ mod tests {
 
     const JSON: &str = r#"{"tag_name":"v1.0.5","html_url":"https://github.com/x/y/releases/tag/v1.0.5",
         "assets":[{"name":"DevLogica-Tools-Windows.exe","size":123,"browser_download_url":"https://e/w.exe"},
-                  {"name":"DevLogica-Tools-macOS.zip","size":456,"browser_download_url":"https://e/m.zip"}]}"#;
+                  {"name":"DevLogica-Tools-macOS.zip","size":456,"browser_download_url":"https://e/m.zip",
+                   "digest":"sha256:2CF24DBA5FB0A30E26E83B2AC5B9E29E1B161E5C1FA7425E73043362938B9824"}]}"#;
 
     #[test]
     fn scegli_asset_presente() {
         let r = parse_release(JSON, "DevLogica-Tools-macOS.zip").unwrap();
         assert_eq!(r.tag, "v1.0.5");
         assert_eq!(r.page, "https://github.com/x/y/releases/tag/v1.0.5");
-        assert_eq!(r.asset, Some(Asset { url: "https://e/m.zip".into(), size: 456 }));
+        assert_eq!(r.asset, Some(Asset { url: "https://e/m.zip".into(), size: 456, sha256: Some("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into()) }));
         assert_eq!(parse_release(JSON, "DevLogica-Tools-Windows.exe").unwrap().asset.unwrap().size, 123);
+    }
+
+    #[test]
+    fn hash_mancante_o_di_altro_tipo() {
+        let w = parse_release(JSON, "DevLogica-Tools-Windows.exe").unwrap().asset.unwrap();
+        assert_eq!(w.sha256, None);
+        let md5 = r#"{"tag_name":"v1","assets":[{"name":"a","size":1,"browser_download_url":"u","digest":"md5:abc"}]}"#;
+        assert_eq!(parse_release(md5, "a").unwrap().asset.unwrap().sha256, None);
     }
 
     #[test]
@@ -182,7 +194,7 @@ mod tests {
     }
 
     fn rel(asset: bool) -> Release {
-        Release { tag: "v1.0.5".into(), page: "p".into(), asset: asset.then(|| Asset { url: "u".into(), size: 1 }) }
+        Release { tag: "v1.0.5".into(), page: "p".into(), asset: asset.then(|| Asset { url: "u".into(), size: 1, sha256: None }) }
     }
     fn texts(s: &UpdateState) -> Vec<(String, bool, Option<UpdateCmd>)> {
         s.menu_items()

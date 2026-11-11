@@ -14,6 +14,7 @@ pub enum Action {
     Coffee(Option<u32>),
     EndCoffee,
     ShowCoffee,
+    OpenCallStats,
     OpenSettings,
     OpenUpdate,
     CheckUpdates,
@@ -176,6 +177,7 @@ pub fn build(s: &MenuState) -> Built {
     let _ = menu.append(&wall);
 
     // ---- generale ----
+    let _ = menu.append(&item("Le mie call…", true, Some(Action::OpenCallStats)));
     let _ = menu.append(&item("Impostazioni…", true, Some(Action::OpenSettings)));
     let _ = menu.append(&check("Avvia all'accesso", s.autostart, Action::ToggleAutostart));
     let _ = menu.append(&PredefinedMenuItem::separator());

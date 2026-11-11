@@ -132,6 +132,8 @@ pub struct Config {
     /// App da non considerare mai (identificativo: percorso dell'eseguibile o bundle id).
     pub ignored_apps: Vec<String>,
     pub alert_style: AlertStyle,
+    /// Registra le proprie call nell'archivio locale per le statistiche.
+    pub record_calls: bool,
     // ---- sfondi ----
     pub wallpaper_enabled: bool,
     pub mode: Mode,
@@ -161,6 +163,7 @@ impl Default for Config {
             detect_unknown: false,
             ignored_apps: Vec::new(),
             alert_style: AlertStyle::Full,
+            record_calls: true,
             wallpaper_enabled: true,
             mode: Mode::Same,
             wallpaper: "lame".into(),
@@ -266,6 +269,13 @@ pub fn now_ms() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn record_calls_attivo_di_default() {
+        assert!(Config::default().record_calls);
+        let c: Config = serde_json::from_str("{}").unwrap();
+        assert!(c.record_calls);
+    }
 
     #[test]
     fn indicatori_default() {

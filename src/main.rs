@@ -4,6 +4,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app;
+mod callstats;
+mod callstore;
 mod config;
 mod detect;
 mod indicators;
@@ -15,6 +17,7 @@ mod overlay;
 mod platform;
 mod render;
 mod snapshot;
+mod statsui;
 mod sound;
 mod sysstats;
 mod tray;
