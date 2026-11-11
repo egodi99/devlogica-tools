@@ -303,9 +303,7 @@ impl App {
                 self.send_all(&p);
             }
             self.show_notices(notices);
-            if self.cfg.record_calls {
-                self.store.end(now_ms());
-            }
+            self.store.end(now_ms());
         }
         self.refresh(el);
     }
@@ -471,9 +469,7 @@ impl App {
                 self.send_all(&p);
             }
         }
-        if self.cfg.record_calls {
-            self.store.end(now_ms());
-        }
+        self.store.end(now_ms());
         if let Some(p) = self.office.end_coffee(&me) {
             self.send_all(&p);
         }
@@ -482,6 +478,7 @@ impl App {
         self.coffee_win = None;
         self.ask_win = None;
         self.settings = None;
+        self.delete = ui::DeleteForm::new(chrono::Local::now().date_naive());
         self.stats_win = None;
         self.edges.clear();
     }
@@ -860,6 +857,7 @@ impl ApplicationHandler<UserEvent> for App {
         let is = |w: &Option<UiWin>| w.as_ref().map(|w| w.window.id() == id).unwrap_or(false);
         if is(&self.settings) && matches!(event, WindowEvent::CloseRequested) {
             self.settings = None;
+            self.delete = ui::DeleteForm::new(chrono::Local::now().date_naive());
             return;
         }
         if is(&self.stats_win) && matches!(event, WindowEvent::CloseRequested) {

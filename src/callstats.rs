@@ -283,8 +283,21 @@ pub fn report<Tz: TimeZone>(segs: &[Segment], p: Period, today: NaiveDate, tz: &
     let mut giorni: std::collections::BTreeMap<NaiveDate, f64> = Default::default();
     let mut per_app: Vec<(String, f64)> = Vec::new();
     let mut calls = Vec::new();
+    // Il costo dipende dal periodo mostrato: i tratti fuori si saltano e gli altri si
+    // ritagliano a [lo, hi] prima di dividerli per giorno.
+    let lo = day_start_ms(primo, tz);
+    let hi = day_start_ms(ultimo + Duration::days(1), tz);
     for s in segs {
-        for (d, ms) in per_day(s, tz) {
+        if s.end_ms <= lo || s.start_ms >= hi {
+            continue;
+        }
+        let ritagliato = Segment {
+            start_ms: s.start_ms.max(lo),
+            end_ms: s.end_ms.min(hi),
+            app: s.app.clone(),
+            auto: s.auto,
+        };
+        for (d, ms) in per_day(&ritagliato, tz) {
             if d < primo || d > ultimo {
                 continue;
             }
@@ -295,8 +308,8 @@ pub fn report<Tz: TimeZone>(segs: &[Segment], p: Period, today: NaiveDate, tz: &
             }
             if let Period::Day(_) = p {
                 calls.push(CallRow {
-                    start_ms: s.start_ms.max(day_start_ms(d, tz)),
-                    end_ms: s.end_ms.min(day_start_ms(d + Duration::days(1), tz)),
+                    start_ms: ritagliato.start_ms.max(day_start_ms(d, tz)),
+                    end_ms: ritagliato.end_ms.min(day_start_ms(d + Duration::days(1), tz)),
                     app: s.app.clone(),
                 });
             }
@@ -604,6 +617,30 @@ mod tests {
         assert_eq!(r.bars[3].tooltip, "gio 12: 0 min");
         assert_eq!(r.avg_workday_ms, Some(H));
         assert!(r.calls.is_empty());
+    }
+
+    #[test]
+    fn report_con_un_tratto_enorme_nel_periodo() {
+        // Un tratto di circa 10 anni, in una settimana: conta solo la parte della settimana.
+        let segs = vec![
+            seg(ms(2016, 11, 1, 0, 0), ms(2026, 11, 11, 12, 0)),
+            seg(ms(2015, 1, 1, 0, 0), ms(2016, 1, 1, 0, 0)),
+        ];
+        let r = report(
+            &segs,
+            Period::Week(date(2026, 11, 9)),
+            date(2026, 11, 11),
+            &tz(),
+        );
+        let giorno = 24.0 * H;
+        // lun e mar interi, mer da mezzanotte alle 12.
+        assert_eq!(r.total_ms, 2.0 * giorno + 12.0 * H);
+        let valori: Vec<f64> = r.bars.iter().map(|b| b.ms).collect();
+        assert_eq!(valori, [giorno, giorno, 12.0 * H, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(r.per_app, vec![("Teams".to_string(), 2.0 * giorno + 12.0 * H)]);
+        let g = report(&segs, Period::Day(date(2026, 11, 10)), date(2026, 11, 11), &tz());
+        assert_eq!(g.calls.len(), 1);
+        assert_eq!(g.calls[0].end_ms - g.calls[0].start_ms, giorno);
     }
 
     #[test]

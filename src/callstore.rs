@@ -84,14 +84,10 @@ impl CallStore {
     pub fn snapshot(&self, now_ms: f64) -> Vec<Segment> {
         let mut v = self.segments.clone();
         if let Some(i) = self.open {
-            // Un buco oltre GAP_MS (sospensione) non conta come tempo di call. Un tratto
-            // appena aperto, mai aggiornato, si estende comunque fino a `now`.
-            let s = &v[i];
-            let appena_aperto = s.end_ms == s.start_ms;
-            if now_ms.is_finite()
-                && now_ms > s.end_ms
-                && (appena_aperto || now_ms - s.end_ms <= GAP_MS)
-            {
+            // Un buco oltre GAP_MS (sospensione) non conta come tempo di call, nemmeno
+            // per un tratto appena aperto (end == start).
+            let fine = v[i].end_ms;
+            if now_ms.is_finite() && now_ms > fine && now_ms - fine <= GAP_MS {
                 v[i].end_ms = now_ms;
             }
         }
@@ -226,7 +222,13 @@ impl CallStore {
         let mut tmp = self.path.as_os_str().to_owned();
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
-        if let Err(e) = std::fs::write(&tmp, json) {
+        // Dati su disco (sync_all) prima del rename, così un blackout non lascia un file vuoto.
+        let scritto = std::fs::File::create(&tmp).and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(json.as_bytes())?;
+            f.sync_all()
+        });
+        if let Err(e) = scritto {
             crate::config::log(format!("call.json: scrittura fallita ({:?})", e.kind()));
             let _ = std::fs::remove_file(&tmp);
             return;
@@ -234,6 +236,14 @@ impl CallStore {
         if let Err(e) = std::fs::rename(&tmp, &self.path) {
             crate::config::log(format!("call.json: rename fallito ({:?})", e.kind()));
             let _ = std::fs::remove_file(&tmp);
+            return;
+        }
+        #[cfg(unix)]
+        if let Some(dir) = self.path.parent() {
+            // Facoltativo: rende duraturo anche il rename. Errori ignorati.
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.sync_all();
+            }
         }
     }
 }
@@ -347,9 +357,18 @@ mod tests {
     fn snapshot_estende_la_call_in_corso() {
         let mut s = CallStore::load(dir("snap").join("call.json"));
         s.begin(Some("Teams"), true, T);
-        let snap = s.snapshot(T + 300.0 * S);
-        assert_eq!(snap[0].end_ms - snap[0].start_ms, 300.0 * S);
-        assert_eq!(s.segments()[0].end_ms - s.segments()[0].start_ms, 0.0);
+        s.touch(T + 30.0 * S);
+        let snap = s.snapshot(T + 90.0 * S);
+        assert_eq!(snap[0].end_ms - snap[0].start_ms, 90.0 * S);
+        assert_eq!(s.segments()[0].end_ms - s.segments()[0].start_ms, 30.0 * S);
+    }
+
+    #[test]
+    fn snapshot_non_estende_il_tratto_appena_aperto_dopo_una_sospensione() {
+        let mut s = CallStore::load(dir("snap-sosp").join("call.json"));
+        s.begin(Some("Teams"), true, T);
+        let snap = s.snapshot(T + 2.0 * 3600.0 * S);
+        assert_eq!(snap[0].end_ms, snap[0].start_ms);
     }
 
     #[test]
@@ -363,12 +382,10 @@ mod tests {
         s.begin(Some("Meet"), false, ms(ieri, 10.0));
         s.touch(ms(ieri, 10.0) + 30.0 * S);
         s.end(ms(ieri, 10.0) + 60.0 * S);
-        s.begin(Some("Teams"), true, ms(oggi, 9.0));
         let now = ms(oggi, 11.0);
-        assert_eq!(
-            s.preview_delete(oggi, oggi, now, &tz),
-            (1, 2.0 * 3600.0 * S)
-        );
+        s.begin(Some("Teams"), true, now - 60.0 * S);
+        s.touch(now - 30.0 * S);
+        assert_eq!(s.preview_delete(oggi, oggi, now, &tz), (1, 60.0 * S));
         s.delete_range(oggi, oggi, now, &tz);
         assert_eq!(s.segments().len(), 2);
         assert_eq!(s.segments()[0].app, "Meet");
