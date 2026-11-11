@@ -370,7 +370,7 @@ pub fn report<Tz: TimeZone>(segs: &[Segment], p: Period, today: NaiveDate, tz: &
 }
 
 /// Testo di conferma della cancellazione: "Cancellare 37 call (21 h 40 min) dal 1° al 31
-/// ottobre 2026?". Mese e anno si ripetono solo quando cambiano.
+/// ottobre 2026?". Mese e anno si ripetono solo quando cambiano; "dall'8", "all'11".
 pub fn confirm_text(calls: usize, ms: f64, from: NaiveDate, to: NaiveDate) -> String {
     let da = if from.year() != to.year() {
         format!("{} {}", giorno_mese(from), from.year())
@@ -380,11 +380,22 @@ pub fn confirm_text(calls: usize, ms: f64, from: NaiveDate, to: NaiveDate) -> St
         num(from)
     };
     format!(
-        "Cancellare {calls} call ({}) dal {da} al {} {}?",
+        "Cancellare {calls} call ({}) {}{da} {}{} {}?",
         fmt_duration(ms),
+        prep(from, "dal "),
+        prep(to, "al "),
         giorno_mese(to),
         to.year()
     )
+}
+
+/// "dal "/"al " davanti al giorno; davanti a 8 e 11 si elide: "dall'", "all'".
+fn prep(d: NaiveDate, base: &str) -> String {
+    if matches!(d.day(), 8 | 11) {
+        format!("{}l'", base.trim_end())
+    } else {
+        base.to_string()
+    }
 }
 
 /// Risultato di `cut_range`: i tratti che restano e quanto è stato tolto.
@@ -710,6 +721,23 @@ mod tests {
         assert_eq!(
             confirm_text(37, 78_000_000.0, date(2025, 12, 30), date(2026, 1, 2)),
             "Cancellare 37 call (21 h 40 min) dal 30 dicembre 2025 al 2 gennaio 2026?"
+        );
+        // elisione davanti a 8 e 11
+        assert_eq!(
+            confirm_text(37, 78_000_000.0, date(2026, 11, 1), date(2026, 11, 11)),
+            "Cancellare 37 call (21 h 40 min) dal 1° all'11 novembre 2026?"
+        );
+        assert_eq!(
+            confirm_text(37, 78_000_000.0, date(2026, 11, 8), date(2026, 11, 20)),
+            "Cancellare 37 call (21 h 40 min) dall'8 al 20 novembre 2026?"
+        );
+        assert_eq!(
+            confirm_text(37, 78_000_000.0, date(2026, 10, 11), date(2026, 11, 3)),
+            "Cancellare 37 call (21 h 40 min) dall'11 ottobre al 3 novembre 2026?"
+        );
+        assert_eq!(
+            confirm_text(37, 78_000_000.0, date(2026, 10, 2), date(2026, 10, 8)),
+            "Cancellare 37 call (21 h 40 min) dal 2 all'8 ottobre 2026?"
         );
     }
 }
