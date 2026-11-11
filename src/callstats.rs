@@ -245,6 +245,177 @@ pub fn fmt_duration(ms: f64) -> String {
     }
 }
 
+/// Una barra del grafico: etichetta sull'asse, testo del suggerimento e durata.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bar {
+    pub label: String,
+    pub tooltip: String,
+    pub ms: f64,
+    pub future: bool,
+}
+
+/// Una call della scheda Giorno: la parte del tratto che cade in quel giorno.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CallRow {
+    pub start_ms: f64,
+    pub end_ms: f64,
+    pub app: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Report {
+    pub total_ms: f64,
+    /// Assente nella scheda Giorno o con 0 giorni lavorativi fino a oggi.
+    pub avg_workday_ms: Option<f64>,
+    /// Vuoto nella scheda Giorno.
+    pub bars: Vec<Bar>,
+    /// Solo nella scheda Giorno, dalla più recente.
+    pub calls: Vec<CallRow>,
+    /// Per durata decrescente.
+    pub per_app: Vec<(String, f64)>,
+}
+
+const LETTERE_MESI: [&str; 12] = ["G", "F", "M", "A", "M", "G", "L", "A", "S", "O", "N", "D"];
+
+fn abbreviato(nome: &str) -> String {
+    nome.chars().take(3).collect()
+}
+
+pub fn report<Tz: TimeZone>(segs: &[Segment], p: Period, today: NaiveDate, tz: &Tz) -> Report {
+    let (primo, ultimo) = (p.first_day(), p.last_day());
+    // Millisecondi per giorno, solo dentro il periodo.
+    let mut giorni: std::collections::BTreeMap<NaiveDate, f64> = Default::default();
+    let mut per_app: Vec<(String, f64)> = Vec::new();
+    let mut calls = Vec::new();
+    for s in segs {
+        for (d, ms) in per_day(s, tz) {
+            if d < primo || d > ultimo {
+                continue;
+            }
+            *giorni.entry(d).or_insert(0.0) += ms;
+            match per_app.iter_mut().find(|(a, _)| *a == s.app) {
+                Some(e) => e.1 += ms,
+                None => per_app.push((s.app.clone(), ms)),
+            }
+            if let Period::Day(_) = p {
+                calls.push(CallRow {
+                    start_ms: s.start_ms.max(day_start_ms(d, tz)),
+                    end_ms: s.end_ms.min(day_start_ms(d + Duration::days(1), tz)),
+                    app: s.app.clone(),
+                });
+            }
+        }
+    }
+    per_app.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    calls.sort_by(|a, b| b.start_ms.total_cmp(&a.start_ms));
+    let total_ms: f64 = giorni.values().sum();
+    let del_giorno = |d: NaiveDate| giorni.get(&d).copied().unwrap_or(0.0);
+
+    let mut bars = Vec::new();
+    match p {
+        Period::Day(_) => {}
+        Period::Week(_) | Period::Month(..) => {
+            let mut d = primo;
+            while d <= ultimo {
+                let ms = del_giorno(d);
+                let (label, nome) = if let Period::Week(_) = p {
+                    let g = abbreviato(GIORNI[d.weekday().num_days_from_monday() as usize]);
+                    (g.clone(), format!("{g} {}", d.day()))
+                } else {
+                    (
+                        d.day().to_string(),
+                        format!("{} {}", d.day(), abbreviato(nome_mese(d))),
+                    )
+                };
+                bars.push(Bar {
+                    label,
+                    tooltip: format!("{nome}: {}", fmt_duration(ms)),
+                    ms,
+                    future: d > today,
+                });
+                d += Duration::days(1);
+            }
+        }
+        Period::Year(y) => {
+            for m in 1..=12u32 {
+                let inizio = NaiveDate::from_ymd_opt(y, m, 1).expect("mese valido");
+                let ms: f64 = giorni
+                    .range(inizio..)
+                    .take_while(|(d, _)| d.month() == m)
+                    .map(|(_, v)| v)
+                    .sum();
+                bars.push(Bar {
+                    label: LETTERE_MESI[m as usize - 1].to_string(),
+                    tooltip: format!("{}: {}", MESI[m as usize - 1], fmt_duration(ms)),
+                    ms,
+                    future: inizio > today,
+                });
+            }
+        }
+    }
+
+    let avg_workday_ms = if p.kind() == PeriodKind::Day {
+        None
+    } else {
+        let n = if today < primo {
+            0
+        } else {
+            workdays(primo, ultimo.min(today))
+        };
+        (n > 0).then(|| total_ms / n as f64)
+    };
+    Report {
+        total_ms,
+        avg_workday_ms,
+        bars,
+        calls,
+        per_app,
+    }
+}
+
+/// Risultato di `cut_range`: i tratti che restano e quanto è stato tolto.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cut {
+    pub kept: Vec<Segment>,
+    /// Tratti toccati dal taglio.
+    pub calls: usize,
+    pub removed_ms: f64,
+}
+
+/// Toglie dai tratti la parte tra l'inizio di `from` e la fine di `to` (giorni compresi).
+/// Un tratto può restare intero, accorciarsi o dividersi in due.
+pub fn cut_range<Tz: TimeZone>(segs: &[Segment], from: NaiveDate, to: NaiveDate, tz: &Tz) -> Cut {
+    let da = day_start_ms(from, tz);
+    let a = day_start_ms(to + Duration::days(1), tz);
+    let mut cut = Cut {
+        kept: Vec::new(),
+        calls: 0,
+        removed_ms: 0.0,
+    };
+    for s in segs {
+        let tolto = s.end_ms.min(a) - s.start_ms.max(da);
+        if tolto <= 0.0 {
+            cut.kept.push(s.clone());
+            continue;
+        }
+        cut.calls += 1;
+        cut.removed_ms += tolto;
+        if s.start_ms < da {
+            cut.kept.push(Segment {
+                end_ms: da,
+                ..s.clone()
+            });
+        }
+        if s.end_ms > a {
+            cut.kept.push(Segment {
+                start_ms: a,
+                ..s.clone()
+            });
+        }
+    }
+    cut
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,5 +542,144 @@ mod tests {
         assert_eq!(workdays(date(2026, 11, 9), date(2026, 11, 15)), 5);
         assert_eq!(workdays(date(2026, 11, 9), date(2026, 11, 11)), 3);
         assert_eq!(workdays(date(2026, 11, 14), date(2026, 11, 15)), 0);
+    }
+
+    fn seg_app(start_ms: f64, end_ms: f64, app: &str) -> Segment {
+        Segment {
+            start_ms,
+            end_ms,
+            app: app.into(),
+            auto: true,
+        }
+    }
+
+    const H: f64 = 3_600_000.0;
+
+    #[test]
+    fn report_settimana() {
+        let segs = vec![
+            seg(ms(2026, 11, 9, 9, 0), ms(2026, 11, 9, 10, 0)),
+            seg(ms(2026, 11, 11, 9, 0), ms(2026, 11, 11, 11, 0)),
+            seg(ms(2026, 11, 8, 9, 0), ms(2026, 11, 8, 9, 30)),
+        ];
+        let r = report(
+            &segs,
+            Period::Week(date(2026, 11, 9)),
+            date(2026, 11, 11),
+            &tz(),
+        );
+        assert_eq!(r.total_ms, 3.0 * H);
+        let etichette: Vec<&str> = r.bars.iter().map(|b| b.label.as_str()).collect();
+        assert_eq!(etichette, ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]);
+        let valori: Vec<f64> = r.bars.iter().map(|b| b.ms).collect();
+        assert_eq!(valori, [H, 0.0, 2.0 * H, 0.0, 0.0, 0.0, 0.0]);
+        let futuro: Vec<bool> = r.bars.iter().map(|b| b.future).collect();
+        assert_eq!(futuro, [false, false, false, true, true, true, true]);
+        assert_eq!(r.bars[0].tooltip, "lun 9: 1 h");
+        assert_eq!(r.bars[3].tooltip, "gio 12: 0 min");
+        assert_eq!(r.avg_workday_ms, Some(H));
+        assert!(r.calls.is_empty());
+    }
+
+    #[test]
+    fn media_settimana_passata() {
+        let segs = vec![seg(ms(2026, 11, 7, 9, 0), ms(2026, 11, 7, 10, 0))];
+        let r = report(
+            &segs,
+            Period::Week(date(2026, 11, 2)),
+            date(2026, 11, 11),
+            &tz(),
+        );
+        assert_eq!(r.avg_workday_ms, Some(H / 5.0));
+        assert!(r.bars.iter().all(|b| !b.future));
+    }
+
+    #[test]
+    fn report_mese_e_anno() {
+        let segs = vec![seg(ms(2026, 10, 31, 23, 0), ms(2026, 11, 1, 1, 0))];
+        let oggi = date(2026, 11, 11);
+        let m = report(&segs, Period::Month(2026, 11), oggi, &tz());
+        assert_eq!(m.bars.len(), 30);
+        assert_eq!(m.bars[0].label, "1");
+        assert_eq!(m.bars[29].label, "30");
+        assert_eq!(m.bars[0].ms, H);
+        assert_eq!(m.bars[12].tooltip, "13 nov: 0 min");
+        assert!(!m.bars[10].future && m.bars[11].future);
+        assert_eq!(m.total_ms, H);
+        let a = report(&segs, Period::Year(2026), oggi, &tz());
+        let etichette: String = a.bars.iter().map(|b| b.label.as_str()).collect();
+        assert_eq!(etichette, "GFMAMGLASOND");
+        assert_eq!(a.bars.len(), 12);
+        assert_eq!(a.bars[9].ms, H);
+        assert_eq!(a.bars[10].ms, H);
+        assert_eq!(a.bars[10].tooltip, "novembre: 1 h");
+        assert!(!a.bars[10].future && a.bars[11].future);
+    }
+
+    #[test]
+    fn report_giorno() {
+        let segs = vec![
+            seg_app(ms(2026, 11, 11, 9, 0), ms(2026, 11, 11, 10, 0), "Teams"),
+            seg_app(ms(2026, 11, 11, 14, 0), ms(2026, 11, 11, 14, 30), "Slack"),
+        ];
+        let r = report(
+            &segs,
+            Period::Day(date(2026, 11, 11)),
+            date(2026, 11, 11),
+            &tz(),
+        );
+        assert_eq!(r.calls.len(), 2);
+        assert_eq!(r.calls[0].app, "Slack");
+        assert_eq!(r.calls[1].app, "Teams");
+        assert!(r.bars.is_empty());
+        assert_eq!(r.avg_workday_ms, None);
+        assert_eq!(
+            r.per_app,
+            vec![("Teams".to_string(), H), ("Slack".to_string(), 30.0 * MIN)]
+        );
+    }
+
+    #[test]
+    fn report_vuoto() {
+        let r = report(
+            &[],
+            Period::Week(date(2026, 11, 9)),
+            date(2026, 11, 11),
+            &tz(),
+        );
+        assert_eq!(r.total_ms, 0.0);
+        assert!(r.per_app.is_empty());
+        assert_eq!(r.bars.len(), 7);
+        assert!(r.bars.iter().all(|b| b.ms == 0.0));
+    }
+
+    #[test]
+    fn taglio_intervallo() {
+        let a = seg(ms(2026, 10, 5, 9, 0), ms(2026, 10, 5, 10, 0));
+        let b = seg(ms(2026, 10, 31, 23, 0), ms(2026, 11, 1, 1, 0));
+        let c = seg(ms(2026, 11, 3, 9, 0), ms(2026, 11, 3, 10, 0));
+        let cut = cut_range(
+            &[a.clone(), b, c.clone()],
+            date(2026, 11, 1),
+            date(2026, 11, 2),
+            &tz(),
+        );
+        assert_eq!(cut.calls, 1);
+        assert_eq!(cut.removed_ms, H);
+        assert_eq!(
+            cut.kept,
+            vec![a, seg(ms(2026, 10, 31, 23, 0), ms(2026, 11, 1, 0, 0)), c]
+        );
+    }
+
+    #[test]
+    fn taglio_in_mezzo_divide() {
+        let s = seg(ms(2026, 11, 1, 22, 0), ms(2026, 11, 3, 2, 0));
+        let cut = cut_range(&[s], date(2026, 11, 2), date(2026, 11, 2), &tz());
+        assert_eq!(cut.calls, 1);
+        assert_eq!(cut.kept.len(), 2);
+        assert_eq!(cut.kept[0].end_ms, ms(2026, 11, 2, 0, 0));
+        assert_eq!(cut.kept[1].start_ms, ms(2026, 11, 3, 0, 0));
+        assert_eq!(cut.removed_ms, 24.0 * H);
     }
 }
