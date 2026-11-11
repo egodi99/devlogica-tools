@@ -1,11 +1,11 @@
 //! Archivio su disco delle call dell'utente: un array JSON di tratti in `call.json`.
 //! I dati restano sul PC. Ogni modifica viene salvata subito, in modo atomico.
 
-// Va tolto quando l'archivio sarà collegato all'app (Task 4/5).
-#![allow(dead_code)]
-
-use crate::callstats::{cut_range, Segment};
-use chrono::{Duration, NaiveDate, TimeZone};
+#[cfg(test)]
+use crate::callstats::cut_range;
+use crate::callstats::Segment;
+#[cfg(test)]
+use chrono::{NaiveDate, TimeZone};
 use std::path::PathBuf;
 
 /// Un buco più lungo (sospensione del PC) non conta come tempo di call.
@@ -78,6 +78,7 @@ impl CallStore {
         }
     }
 
+    #[cfg(test)]
     pub fn segments(&self) -> &[Segment] {
         &self.segments
     }
@@ -152,7 +153,10 @@ impl CallStore {
         self.save();
     }
 
+    // Cancellazione dello storico: la usano le Impostazioni (Task 6), che tolgono #[cfg(test)].
+
     /// Quante call e quanto tempo toglierebbe `delete_range`.
+    #[cfg(test)]
     pub fn preview_delete<Tz: TimeZone>(
         &self,
         from: NaiveDate,
@@ -166,6 +170,7 @@ impl CallStore {
 
     /// Toglie dallo storico i giorni da `from` a `to` compresi. Se il tratto aperto viene
     /// toccato, ne apre uno nuovo da `now_ms` con la stessa app.
+    #[cfg(test)]
     pub fn delete_range<Tz: TimeZone>(
         &mut self,
         from: NaiveDate,
@@ -198,6 +203,7 @@ impl CallStore {
     }
 
     /// Primo giorno con una call, per il pulsante "Tutto".
+    #[cfg(test)]
     pub fn first_day<Tz: TimeZone>(&self, tz: &Tz) -> Option<NaiveDate> {
         self.segments
             .iter()
@@ -243,7 +249,7 @@ impl CallStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("dlt-callstore-{name}-{}", std::process::id()));

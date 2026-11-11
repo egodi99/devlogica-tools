@@ -1,5 +1,6 @@
 //! Coordinatore: sfondi, rete, riconoscimento call, finestre di avviso e menu.
 
+use crate::callstats::{self, Period, PeriodKind};
 use crate::callstore::CallStore;
 use crate::config::{app_dir, log, now_ms, AlertStyle, Config, Detection};
 use crate::detect::{Detect, Detector};
@@ -7,6 +8,7 @@ use crate::net::{Net, Packet};
 use crate::office::{Notice, Office, Outgoing};
 use crate::render::Gpu;
 use crate::sound::{self, Chime};
+use crate::statsui::{self, StatsAction};
 use crate::tray::{self, Action, Badge, MenuState};
 use crate::ui::{self, Edge, UiAction, UiWin, View};
 use crate::wallpaper::{IndicatorState, Wallpapers};
@@ -56,6 +58,9 @@ pub struct App {
     call_win: Option<UiWin>,
     coffee_win: Option<UiWin>,
     ask_win: Option<UiWin>,
+    /// Finestra "Le mie call" e periodo mostrato.
+    stats_win: Option<UiWin>,
+    stats_period: Period,
     edges: Vec<Edge>,
     calls_hidden: bool,
     coffee_hidden: bool,
@@ -102,6 +107,8 @@ impl App {
             call_win: None,
             coffee_win: None,
             ask_win: None,
+            stats_win: None,
+            stats_period: Period::containing(PeriodKind::Week, chrono::Local::now().date_naive()),
             edges: Vec::new(),
             calls_hidden: false,
             coffee_hidden: false,
@@ -318,6 +325,7 @@ impl App {
                 }
             }
             Action::ShowCoffee => self.coffee_hidden = false,
+            Action::OpenCallStats => self.open_call_stats(el),
             Action::OpenSettings => self.open_settings(el),
             Action::OpenUpdate => self.open_release_page(),
             Action::CheckUpdates => self.check_updates(true),
@@ -455,6 +463,7 @@ impl App {
         self.coffee_win = None;
         self.ask_win = None;
         self.settings = None;
+        self.stats_win = None;
         self.edges.clear();
     }
 
@@ -478,6 +487,25 @@ impl App {
             // disegna subito il primo fotogramma: è lì che la finestra diventa visibile
             Some(s) => s.next_paint = Instant::now(),
             None => log("Impossibile aprire la finestra delle impostazioni"),
+        }
+    }
+
+    /// Finestra "Le mie call": si apre sulla settimana in corso.
+    fn open_call_stats(&mut self, el: &ActiveEventLoop) {
+        if let Some(s) = &self.stats_win {
+            s.focus();
+            return;
+        }
+        let (Some(gpu), Some(m)) = (self.gpu.as_ref(), Self::primary(el)) else { return };
+        let (w, h) = ui::logical_size(&m);
+        let (ww, wh) = (560.0, 640.0f64.min(h - 80.0));
+        let attrs = ui::attrs_on(&m, (w - ww) / 2.0, (h - wh) / 2.0, ww, wh).with_title("DevLogica Tools – Le mie call").with_resizable(false);
+        self.stats_period = Period::containing(PeriodKind::Week, chrono::Local::now().date_naive());
+        self.stats_win = UiWin::new(el, gpu, attrs, false);
+        match &mut self.stats_win {
+            // disegna subito il primo fotogramma: è lì che la finestra diventa visibile
+            Some(s) => s.next_paint = Instant::now(),
+            None => log("Impossibile aprire la finestra delle mie call"),
         }
     }
 
@@ -563,7 +591,10 @@ impl App {
             ax_trusted: self.ax_trusted,
             actions: Vec::new(),
         };
-        for (win, kind) in [(&mut self.call_win, 0), (&mut self.coffee_win, 1), (&mut self.ask_win, 2), (&mut self.settings, 3)] {
+        let today = chrono::Local::now().date_naive();
+        let period = self.stats_period;
+        let mut stats_action = None;
+        for (win, kind) in [(&mut self.call_win, 0), (&mut self.coffee_win, 1), (&mut self.ask_win, 2), (&mut self.settings, 3), (&mut self.stats_win, 4)] {
             let Some(w) = win.as_mut() else { continue };
             if !force && now < w.next_paint {
                 continue;
@@ -572,10 +603,31 @@ impl App {
                 0 => w.paint(gpu, ui::RED_BG, |u| ui::call_panel(u, &mut view)),
                 1 => w.paint(gpu, ui::COFFEE_BG, |u| ui::coffee_panel(u, &mut view)),
                 2 => w.paint(gpu, ui::INK, |u| ui::ask_panel(u, &mut view)),
-                _ => w.paint(gpu, ui::INK, |u| ui::settings(u, &mut view)),
+                3 => w.paint(gpu, ui::INK, |u| ui::settings(u, &mut view)),
+                _ => {
+                    // il report si ricalcola a ogni disegno: la call in corso cresce da sola
+                    let rep = callstats::report(&self.store.snapshot(now_ms()), period, today, &chrono::Local);
+                    let (recording, live) = (view.cfg.record_calls, self.store.is_open());
+                    w.paint(gpu, ui::INK, |u| {
+                        if let Some(a) = statsui::stats_panel(u, period, today, &rep, recording, live) {
+                            stats_action = Some(a);
+                        }
+                    });
+                }
             }
         }
         actions.append(&mut view.actions);
+        if let Some(a) = stats_action {
+            self.stats_period = match a {
+                StatsAction::Kind(k) => Period::containing(k, today),
+                StatsAction::Prev => period.prev(),
+                StatsAction::Next if period.can_go_next(today) => period.next(),
+                StatsAction::Next => period,
+            };
+            if let Some(w) = self.stats_win.as_mut() {
+                w.next_paint = Instant::now();
+            }
+        }
         if !actions.is_empty() {
             self.handle_ui(el, actions, &old_name, old_record);
         }
@@ -782,7 +834,11 @@ impl ApplicationHandler<UserEvent> for App {
             self.settings = None;
             return;
         }
-        for w in [&mut self.settings, &mut self.call_win, &mut self.coffee_win, &mut self.ask_win].into_iter().flatten() {
+        if is(&self.stats_win) && matches!(event, WindowEvent::CloseRequested) {
+            self.stats_win = None;
+            return;
+        }
+        for w in [&mut self.settings, &mut self.stats_win, &mut self.call_win, &mut self.coffee_win, &mut self.ask_win].into_iter().flatten() {
             if w.window.id() == id {
                 w.on_event(gpu, &event);
                 if matches!(event, WindowEvent::RedrawRequested) {
@@ -871,7 +927,7 @@ impl ApplicationHandler<UserEvent> for App {
         if !self.edges.is_empty() {
             wake = wake.min(self.next_edge);
         }
-        for w in [&self.settings, &self.call_win, &self.coffee_win, &self.ask_win].into_iter().flatten() {
+        for w in [&self.settings, &self.stats_win, &self.call_win, &self.coffee_win, &self.ask_win].into_iter().flatten() {
             wake = wake.min(w.next_paint);
         }
         el.set_control_flow(ControlFlow::WaitUntil(wake.max(Instant::now() + Duration::from_millis(5))));

@@ -1,10 +1,6 @@
 //! Statistiche delle call: logica pura sulle date (periodi, divisione a mezzanotte, formati).
 //! Fuso locale, settimana lunedì–domenica, giorni interi, nomi italiani senza locale di sistema.
 
-// Le funzioni vengono usate dai moduli successivi: l'attributo si toglie quando il modulo
-// è collegato al resto dell'app (Task 5).
-#![allow(dead_code)]
-
 use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -373,7 +369,10 @@ pub fn report<Tz: TimeZone>(segs: &[Segment], p: Period, today: NaiveDate, tz: &
     }
 }
 
+// Usati dalla cancellazione dello storico (Impostazioni, Task 6), che toglie #[cfg(test)].
+
 /// Risultato di `cut_range`: i tratti che restano e quanto è stato tolto.
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Cut {
     pub kept: Vec<Segment>,
@@ -384,6 +383,7 @@ pub struct Cut {
 
 /// Toglie dai tratti la parte tra l'inizio di `from` e la fine di `to` (giorni compresi).
 /// Un tratto può restare intero, accorciarsi o dividersi in due.
+#[cfg(test)]
 pub fn cut_range<Tz: TimeZone>(segs: &[Segment], from: NaiveDate, to: NaiveDate, tz: &Tz) -> Cut {
     let da = day_start_ms(from, tz);
     let a = day_start_ms(to + Duration::days(1), tz);

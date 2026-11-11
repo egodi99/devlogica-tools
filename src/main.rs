@@ -17,6 +17,7 @@ mod overlay;
 mod platform;
 mod render;
 mod snapshot;
+mod statsui;
 mod sound;
 mod sysstats;
 mod tray;

@@ -21,14 +21,14 @@ pub const INK: Color32 = Color32::from_rgb(14, 9, 28);
 const INK_2: Color32 = Color32::from_rgb(26, 18, 46);
 const LILAC: Color32 = Color32::from_rgb(194, 136, 214);
 const SKY: Color32 = Color32::from_rgb(112, 189, 232);
-const RED: Color32 = Color32::from_rgb(255, 59, 48);
+pub const RED: Color32 = Color32::from_rgb(255, 59, 48);
 pub const RED_BG: Color32 = Color32::from_rgb(28, 7, 9);
-const RED_SOFT: Color32 = Color32::from_rgb(255, 180, 170);
+pub const RED_SOFT: Color32 = Color32::from_rgb(255, 180, 170);
 const AMBER: Color32 = Color32::from_rgb(240, 170, 70);
 pub const COFFEE_BG: Color32 = Color32::from_rgb(26, 17, 10);
 const GREEN: Color32 = Color32::from_rgb(52, 199, 89);
-const TEXT: Color32 = Color32::from_rgb(241, 234, 247);
-const MUTED: Color32 = Color32::from_rgb(170, 160, 190);
+pub const TEXT: Color32 = Color32::from_rgb(241, 234, 247);
+pub const MUTED: Color32 = Color32::from_rgb(170, 160, 190);
 
 /// Azioni scelte dall'utente nelle finestre, eseguite poi dall'app.
 #[derive(Clone, Debug)]
@@ -475,7 +475,7 @@ pub fn ask_panel(ui: &mut egui::Ui, v: &mut View) {
     });
 }
 
-fn section(ui: &mut egui::Ui, title: &str) {
+pub fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(10.0);
     ui.label(RichText::new(title).size(15.0).strong().color(LILAC));
 }
