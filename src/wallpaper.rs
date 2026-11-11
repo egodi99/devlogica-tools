@@ -28,6 +28,8 @@ struct Screen {
     occluded: bool,
     /// Posizione e dimensione dello schermo in punti globali (per trovare lo schermo del Dock).
     global: GRect,
+    /// Angolo dello schermo in pixel fisici del desktop (Windows: coordinate del puntatore).
+    phys: [i32; 2],
 }
 
 /// Dati degli indicatori, aggiornati dall'app ogni 2 secondi (solo macOS).
@@ -164,7 +166,7 @@ impl Wallpapers {
         }
 
         let instance = gpu.as_ref().map(|g| g.instance.clone()).unwrap_or_else(render::new_instance);
-        let mut created: Vec<(Arc<Window>, wgpu::Surface<'static>, String, [f32; 2], [f32; 2], winit::dpi::PhysicalSize<u32>, GRect)> = Vec::new();
+        let mut created: Vec<(Arc<Window>, wgpu::Surface<'static>, String, [f32; 2], [f32; 2], winit::dpi::PhysicalSize<u32>, GRect, [i32; 2])> = Vec::new();
         for m in &mons {
             let (pos, size) = (m.position(), m.size());
             let Some(window) = create_window(el, m) else { continue };
@@ -191,7 +193,7 @@ impl Wallpapers {
             let sf = m.scale_factor();
             let (lp, ls) = (pos.to_logical::<f64>(sf), size.to_logical::<f64>(sf));
             let global = GRect { x: lp.x, y: lp.y, w: ls.width, h: ls.height };
-            created.push((window, surface, wallpaper, offset, canvas, size, global));
+            created.push((window, surface, wallpaper, offset, canvas, size, global, [pos.x, pos.y]));
         }
 
         if gpu.is_none() {
@@ -211,7 +213,7 @@ impl Wallpapers {
             self.dash = None;
         }
         g.retain_pipelines(&in_use);
-        for (window, surface, wallpaper, offset, canvas, size, global) in created {
+        for (window, surface, wallpaper, offset, canvas, size, global, phys) in created {
             let id = window.id();
             let scale = crate::indicators::indicator_scale(
                 cfg.quality.scale(size.height),
@@ -219,10 +221,38 @@ impl Wallpapers {
                 cfg!(target_os = "macos") && cfg.indicators.enabled,
             );
             let target = g.make_target(window, surface, scale);
-            self.screens.insert(id, Screen { target, size, wallpaper, offset, canvas, occluded: false, global });
+            self.screens.insert(id, Screen { target, size, wallpaper, offset, canvas, occluded: false, global, phys });
         }
         self.changed = Instant::now();
         log(format!("Sfondi: {} schermi, modalità {:?}", self.screens.len(), cfg.mode));
+    }
+
+    /// Vero se almeno uno schermo mostra il cruscotto.
+    pub fn dash_active(&self) -> bool {
+        self.dash.is_some() && self.screens.values().any(|s| s.wallpaper == crate::dash::ID)
+    }
+
+    /// Tasto del cruscotto sotto il puntatore. Le coordinate sono quelle di `platform::pointer`:
+    /// pixel fisici su Windows, punti globali su macOS.
+    pub fn dash_hit(&self, x: f64, y: f64) -> Option<crate::dash::DashButton> {
+        self.screens.values().filter(|s| s.wallpaper == crate::dash::ID).find_map(|s| {
+            let (lx, ly) = if cfg!(target_os = "macos") {
+                let k = s.target.window.scale_factor();
+                ((x - s.global.x) * k, (y - s.global.y) * k)
+            } else {
+                (x - s.phys[0] as f64, y - s.phys[1] as f64)
+            };
+            if lx < 0.0 || ly < 0.0 || lx >= s.size.width as f64 || ly >= s.size.height as f64 {
+                return None;
+            }
+            crate::dash::hit(s.canvas, [lx as f32 + s.offset[0], ly as f32 + s.offset[1]])
+        })
+    }
+
+    pub fn dash_press(&mut self, b: crate::dash::DashButton) {
+        if let Some(d) = self.dash.as_mut() {
+            d.press(b);
+        }
     }
 
     pub fn clear(&mut self) {
@@ -275,6 +305,7 @@ impl Wallpapers {
                         stats,
                         office,
                         since,
+                        pressed: rt.pressed(),
                     };
                     let format = screen.target.format;
                     let mut extra = |g: &Gpu, enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| rt.draw(g, enc, view, format, &frame);

@@ -426,3 +426,36 @@ pub fn work_area(x: i32, y: i32) -> Option<(i32, i32, i32, i32)> {
         Some((r.left, r.top, r.right, r.bottom))
     }
 }
+
+// ---------------------------------------------------------------------------
+// Clic sul cruscotto: lo sfondo sta sotto alle icone e non riceve il mouse, quindi l'app
+// guarda la posizione e il tasto sinistro e controlla che sotto ci sia il desktop.
+// ---------------------------------------------------------------------------
+
+/// Posizione del puntatore (pixel fisici) e tasto principale premuto.
+pub fn pointer() -> Option<(f64, f64, bool)> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
+    unsafe {
+        let mut p = POINT::default();
+        GetCursorPos(&mut p).ok()?;
+        // con i tasti invertiti il tasto principale fisico è il destro
+        let key = if GetSystemMetrics(SM_SWAPBUTTON) != 0 { VK_RBUTTON } else { VK_LBUTTON };
+        let down = (GetAsyncKeyState(key.0 as i32) as u16 & 0x8000) != 0;
+        Some((p.x as f64, p.y as f64, down))
+    }
+}
+
+/// Vero se nel punto c'è il desktop (icone o sfondo) e non una finestra.
+pub fn desktop_at(x: f64, y: f64) -> bool {
+    unsafe {
+        let h = WindowFromPoint(POINT { x: x as i32, y: y as i32 });
+        if h.is_invalid() {
+            return false;
+        }
+        let root = GetAncestor(h, GA_ROOT);
+        let mut buf = [0u16; 64];
+        let n = GetClassNameW(root, &mut buf);
+        let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+        class == "Progman" || class == "WorkerW"
+    }
+}

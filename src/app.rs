@@ -103,6 +103,9 @@ pub struct App {
     store: CallStore,
     next_edge: Instant,
     fullscreen: bool,
+    /// Clic sul cruscotto: tasto sinistro premuto al giro precedente e tasto colpito alla pressione.
+    dash_down: bool,
+    dash_press: Option<(crate::dash::DashButton, f64, f64)>,
     // indicatori sullo sfondo (solo macOS)
     sampler: Option<crate::sysstats::Sampler>,
     ind_state: Option<IndicatorState>,
@@ -155,6 +158,8 @@ impl App {
             store: CallStore::load(app_dir().join("call.json")),
             next_edge: now,
             fullscreen: false,
+            dash_down: false,
+            dash_press: None,
             sampler: None,
             ind_state: None,
             ax_prompted: false,
@@ -711,6 +716,78 @@ impl App {
         }
     }
 
+    /// Clic sui tasti del cruscotto. Lo sfondo sta sotto alle icone e non riceve il mouse:
+    /// si guarda il tasto sinistro a ogni giro e vale solo se sotto c'è il desktop.
+    fn poll_dash_click(&mut self, el: &ActiveEventLoop) {
+        let Some((x, y, down)) = platform::pointer() else { return };
+        if down && !self.dash_down {
+            self.dash_press = self.wall.dash_hit(x, y).filter(|_| platform::desktop_at(x, y)).map(|b| (b, x, y));
+        } else if !down && self.dash_down {
+            if let Some((b, px, py)) = self.dash_press.take() {
+                // un clic, non un trascinamento (es. selezione delle icone)
+                if (x - px).abs() < 8.0 && (y - py).abs() < 8.0 && self.wall.dash_hit(x, y) == Some(b) {
+                    self.wall.dash_press(b);
+                    self.dash_action(el, b);
+                }
+            }
+        }
+        self.dash_down = down;
+    }
+
+    fn dash_action(&mut self, el: &ActiveEventLoop, b: crate::dash::DashButton) {
+        use crate::dash::DashButton::*;
+        use platform::SysTool;
+        log(format!("Cruscotto: {b:?}"));
+        let me = self.me();
+        let tool = |t: SysTool| platform::open_tool(t);
+        match b {
+            Rocker(0) | Gauge(4) => tool(SysTool::Wsl),
+            Rocker(1) | Gauge(5) | Lcd => tool(SysTool::Docker),
+            Rocker(2) | Gauge(1) => tool(SysTool::Network),
+            Rocker(3) => tool(SysTool::Power),
+            Rocker(4) => {
+                let a = if self.office.my_call.is_some() { Action::EndCall } else { Action::StartCall };
+                self.handle_action(el, a);
+            }
+            Rocker(5) => {
+                let a = match &self.office.coffee {
+                    None => Action::Coffee(None),
+                    Some(c) if c.mine && c.by == me => Action::EndCoffee,
+                    Some(_) => Action::ShowCoffee,
+                };
+                self.handle_action(el, a);
+            }
+            Rocker(6) => {
+                self.cfg.detection = if self.cfg.detection == Detection::Auto { Detection::Off } else { Detection::Auto };
+                self.cfg.save();
+                self.refresh(el);
+            }
+            Rocker(7) => self.handle_action(el, Action::ToggleLogo),
+            Rocker(8) => self.handle_action(el, Action::CheckUpdates),
+            Rocker(9) => {
+                self.settings_page = ui::Page::Home;
+                self.open_settings(el);
+            }
+            Rocker(10) => self.handle_action(el, Action::ShowCalls),
+            Rocker(11) => tool(SysTool::Lock),
+            LeftRocker(0) => self.handle_action(el, Action::TogglePause),
+            LeftRocker(1) => {
+                // sfondo successivo del catalogo
+                let i = self.catalog.iter().position(|w| w.id == self.cfg.wallpaper).unwrap_or(0);
+                let next = self.catalog[(i + 1) % self.catalog.len()].id.clone();
+                self.handle_action(el, Action::SetWallpaper(next));
+            }
+            LeftRocker(_) => {
+                self.settings_page = ui::Page::Wallpaper;
+                self.open_settings(el);
+                self.repaint_settings();
+            }
+            Gauge(8) => tool(SysTool::Clock),
+            Gauge(_) => tool(SysTool::TaskManager),
+            Rocker(_) => {}
+        }
+    }
+
     /// Mostra o nasconde le finestre di avviso in base allo stato attuale.
     fn refresh(&mut self, el: &ActiveEventLoop) {
         let others = self.office.others().len();
@@ -1153,6 +1230,12 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
 
+        // tasti del cruscotto
+        let dash_on = self.cfg.wallpaper_enabled && self.wall.dash_active();
+        if dash_on {
+            self.poll_dash_click(el);
+        }
+
         // sfondi
         let wall_on = self.cfg.wallpaper_enabled && !self.cfg.paused && !self.fullscreen;
         if wall_on && now >= self.next_frame {
@@ -1191,6 +1274,10 @@ impl ApplicationHandler<UserEvent> for App {
         }
         if !self.edges.is_empty() {
             wake = wake.min(self.next_edge);
+        }
+        // anche con lo sfondo in pausa i tasti del cruscotto devono rispondere
+        if dash_on {
+            wake = wake.min(now + Duration::from_millis(30));
         }
         for w in [&self.settings, &self.stats_win, &self.call_win, &self.coffee_win, &self.ask_win, &self.popup].into_iter().flatten() {
             wake = wake.min(w.next_paint);

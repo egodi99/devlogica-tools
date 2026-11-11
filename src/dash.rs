@@ -226,6 +226,43 @@ fn rocker_rect(i: usize) -> Rect {
     Rect::from_center_size(Pos2::new(1484.0 + 60.0 * col as f32, 766.0 + 98.0 * row as f32), Vec2::new(46.0, 64.0))
 }
 
+/// Interruttori della console di sinistra.
+fn left_rocker_rect(i: usize) -> Rect {
+    Rect::from_center_size(Pos2::new(150.0 + 60.0 * i as f32, 872.0), Vec2::new(46.0, 64.0))
+}
+
+/// Parti del cruscotto che si possono cliccare (sul desktop, dove non ci sono finestre).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DashButton {
+    /// Interruttori della console di destra, 0..12 (vedi `rockers` in `paint`).
+    Rocker(usize),
+    /// Interruttori della console di sinistra, 0..3.
+    LeftRocker(usize),
+    /// Strumenti, nello stesso ordine di `GAUGES`.
+    Gauge(usize),
+    Lcd,
+}
+
+/// Cosa c'è sotto un punto della tela (in pixel della tela, come nello shader).
+pub fn hit(canvas: [f32; 2], p: [f32; 2]) -> Option<DashButton> {
+    let k = (canvas[0] / DW).min(canvas[1] / DH);
+    if k <= 0.0 {
+        return None;
+    }
+    let o = Vec2::new((canvas[0] - DW * k) / 2.0, canvas[1] - DH * k);
+    let d = Pos2::new((p[0] - o.x) / k, (p[1] - o.y) / k);
+    if let Some(i) = (0..12).find(|i| rocker_rect(*i).expand(4.0).contains(d)) {
+        return Some(DashButton::Rocker(i));
+    }
+    if let Some(i) = (0..3).find(|i| left_rocker_rect(*i).expand(4.0).contains(d)) {
+        return Some(DashButton::LeftRocker(i));
+    }
+    if LCD.contains(d) {
+        return Some(DashButton::Lcd);
+    }
+    GAUGES.iter().position(|g| (d - Pos2::new(g.x, g.y)).length() <= g.r + 4.0).map(DashButton::Gauge)
+}
+
 const LCD: Rect = Rect { min: Pos2 { x: 1470.0, y: 580.0 }, max: Pos2 { x: 1650.0, y: 672.0 } };
 
 /// Costanti per lo shader: le stesse posizioni dei quadranti e degli interruttori.
@@ -263,6 +300,8 @@ pub struct DashRuntime {
     /// Distanza percorsa dalla strada nello shader (cresce con il tachimetro).
     pub road: f32,
     overlays: std::collections::HashMap<wgpu::TextureFormat, DashOverlay>,
+    /// Ultimo tasto premuto, per l'animazione dello scatto.
+    pressed: Option<(DashButton, Instant)>,
 }
 
 /// Fondo scala degli strumenti, nello stesso ordine di `GAUGES` (l'orologio non conta).
@@ -286,7 +325,7 @@ fn targets(s: &DashStats) -> [f32; 8] {
 
 impl DashRuntime {
     pub fn new() -> Self {
-        Self { sampler: DashSampler::start(), shown: [0.0; 9], last: Instant::now(), road: 0.0, overlays: Default::default() }
+        Self { sampler: DashSampler::start(), shown: [0.0; 9], last: Instant::now(), road: 0.0, overlays: Default::default(), pressed: None }
     }
 
     /// Avanza le lancette e la strada; `since` = secondi dall'ultimo cambio di sfondo.
@@ -307,6 +346,15 @@ impl DashRuntime {
         let kmh = self.shown[1].max(0.0);
         self.road = (self.road + dt * (kmh * 0.045 + 0.08)) % 1000.0;
         s
+    }
+
+    pub fn press(&mut self, b: DashButton) {
+        self.pressed = Some((b, Instant::now()));
+    }
+
+    /// Tasto ancora "abbassato" (per un quarto di secondo dopo il clic).
+    pub fn pressed(&self) -> Option<DashButton> {
+        self.pressed.filter(|(_, t)| t.elapsed() < Duration::from_millis(260)).map(|(b, _)| b)
     }
 
     pub fn draw(&mut self, gpu: &Gpu, enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, format: wgpu::TextureFormat, frame: &DashFrame) {
@@ -340,6 +388,7 @@ pub struct DashFrame {
     pub stats: DashStats,
     pub office: DashOffice,
     pub since: f32,
+    pub pressed: Option<DashButton>,
 }
 
 pub struct DashOverlay {
@@ -607,14 +656,15 @@ fn lamp(p: &egui::Painter, m: &Map, r: Rect, on: bool, color: Color32, glyph: &s
 }
 
 /// Interruttore a bilanciere con il LED in alto.
-fn rocker(p: &egui::Painter, m: &Map, r: Rect, led: Option<Color32>, glyph: &str, text: bool) {
-    let rr = m.rect(r);
+fn rocker(p: &egui::Painter, m: &Map, r: Rect, led: Option<Color32>, glyph: &str, text: bool, down: bool) {
+    // premuto: il bilanciere scende e la metà superiore non sporge più
+    let rr = m.rect(if down { r.translate(Vec2::new(0.0, 2.0)) } else { r });
     let rad = m.l(5.0);
     p.rect_filled(rr.translate(Vec2::new(0.0, m.l(3.0))), rad, Color32::from_rgba_unmultiplied(0, 0, 0, 140));
     p.rect_filled(rr, rad, Color32::from_rgb(30, 31, 34));
     // metà superiore leggermente sporgente
     let top = Rect::from_min_max(rr.min, Pos2::new(rr.max.x, rr.center().y));
-    p.rect_filled(top.shrink(m.l(2.0)), rad, Color32::from_rgb(40, 42, 46));
+    p.rect_filled(top.shrink(m.l(2.0)), rad, if down { Color32::from_rgb(26, 27, 30) } else { Color32::from_rgb(40, 42, 46) });
     p.line_segment([Pos2::new(rr.left() + rad, rr.top() + 1.0), Pos2::new(rr.right() - rad, rr.top() + 1.0)], Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 26)));
     let led_r = Rect::from_center_size(Pos2::new(rr.center().x, rr.top() + m.l(9.0)), Vec2::new(m.l(16.0), m.l(4.0)));
     match led {
@@ -728,12 +778,16 @@ fn paint(p: &egui::Painter, f: &DashFrame, shown: &[f32; 9]) {
         (None, "\u{E72E}", false),
     ];
     for (i, (led, g, text)) in rockers.iter().enumerate() {
-        rocker(p, &m, rocker_rect(i), *led, g, *text);
+        rocker(p, &m, rocker_rect(i), *led, g, *text, f.pressed == Some(DashButton::Rocker(i)));
     }
-    // console di sinistra: tre interruttori di servizio
-    for (i, g) in ["\u{EA80}", "\u{E706}", "\u{E708}"].iter().enumerate() {
-        let r = Rect::from_center_size(Pos2::new(150.0 + 60.0 * i as f32, 872.0), Vec2::new(46.0, 64.0));
-        rocker(p, &m, r, None, g, false);
+    // console di sinistra: pausa, sfondo successivo, opzioni degli sfondi
+    for (i, g) in [theme::ic::PAUSE, theme::ic::PICTURE, theme::ic::SLIDERS].iter().enumerate() {
+        rocker(p, &m, left_rocker_rect(i), None, g, false, f.pressed == Some(DashButton::LeftRocker(i)));
+    }
+    // strumento cliccato: lampo sulla ghiera
+    if let Some(DashButton::Gauge(i)) = f.pressed {
+        let g = GAUGES[i];
+        p.circle_stroke(m.p(g.x, g.y), m.l(g.r + 3.0), Stroke::new(m.l(3.0), Color32::from_rgba_unmultiplied(255, 140, 50, 120)));
     }
     glass(p, &m);
 }
@@ -767,6 +821,7 @@ pub fn render_static(gpu: &mut Gpu, wp: &Wallpaper, mut params: Params, stats: D
         stats,
         office: DashOffice { call: true, coffee: false, auto_detect: true },
         since: 60.0,
+        pressed: None,
     };
     let mut extra = |g: &Gpu, enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| ov.draw(g, enc, view, &frame, &shown);
     gpu.render_offscreen(wp, params, Some(&mut extra))
@@ -797,6 +852,24 @@ mod tests {
     }
 
     #[test]
+    fn tasti_cliccabili() {
+        let c = [1920.0, 1080.0];
+        let r = rocker_rect(4).center();
+        assert_eq!(hit(c, [r.x, r.y]), Some(DashButton::Rocker(4)));
+        assert_eq!(hit(c, [GAUGES[0].x, GAUGES[0].y]), Some(DashButton::Gauge(0)));
+        assert_eq!(hit(c, [LCD.center().x, LCD.center().y]), Some(DashButton::Lcd));
+        let l = left_rocker_rect(1).center();
+        assert_eq!(hit(c, [l.x, l.y]), Some(DashButton::LeftRocker(1)));
+        assert_eq!(hit(c, [960.0, 200.0]), None); // cielo
+        // schermo 16:10 più grande: il cruscotto è scalato e ancorato in basso
+        let c2 = [2560.0, 1600.0];
+        let k = (2560.0f32 / DW).min(1600.0 / DH);
+        let o = Vec2::new((2560.0 - DW * k) / 2.0, 1600.0 - DH * k);
+        let q = o + Vec2::new(GAUGES[1].x, GAUGES[1].y) * k;
+        assert_eq!(hit(c2, [q.x, q.y]), Some(DashButton::Gauge(1)));
+    }
+
+    #[test]
     fn giro_di_prova() {
         assert_eq!(sweep_k(0.0), 0.0);
         assert!(sweep_k(1.4) > 0.95);
@@ -812,7 +885,7 @@ mod tests {
 
     #[test]
     fn mappa_ancorata_in_basso() {
-        let f = DashFrame { size_px: [2560, 1600], scale: 1.0, offset: [0.0, 0.0], canvas: [2560.0, 1600.0], stats: DashStats::default(), office: DashOffice::default(), since: 0.0 };
+        let f = DashFrame { size_px: [2560, 1600], scale: 1.0, offset: [0.0, 0.0], canvas: [2560.0, 1600.0], stats: DashStats::default(), office: DashOffice::default(), since: 0.0, pressed: None };
         let m = Map::new(&f);
         let bottom = m.p(960.0, 1080.0);
         assert!((bottom.y - 1600.0).abs() < 0.01);
