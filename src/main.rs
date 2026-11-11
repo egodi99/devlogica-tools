@@ -37,11 +37,11 @@ fn main() {
     if args.get(1).map(|a| a == "--snapshot").unwrap_or(false) {
         std::process::exit(snapshot::run(&args[2..]));
     }
+    if args.get(1).map(|a| a == "--bench").unwrap_or(false) {
+        std::process::exit(snapshot::run_bench(&args[2..]));
+    }
     if args.get(1).map(|a| a == "--notifica-prova").unwrap_or(false) {
         std::process::exit(notify::run_test());
-    }
-    if args.get(1).map(|a| a == "--bench").unwrap_or(false) {
-        std::process::exit(snapshot::bench(&args[2..]));
     }
     if args.get(1).map(|a| a == "--statistiche").unwrap_or(false) {
         // letture del cruscotto per qualche secondo, per verificare i contatori su questo PC

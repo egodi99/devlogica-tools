@@ -26,6 +26,8 @@ struct Screen {
     offset: [f32; 2],
     canvas: [f32; 2],
     occluded: bool,
+    /// Da ridisegnare: serve agli sfondi fissi, che non si ridisegnano a ogni fotogramma.
+    dirty: bool,
     /// Posizione e dimensione dello schermo in punti globali (per trovare lo schermo del Dock).
     global: GRect,
     /// Angolo dello schermo in pixel fisici del desktop (Windows: coordinate del puntatore).
@@ -33,7 +35,7 @@ struct Screen {
 }
 
 /// Dati degli indicatori, aggiornati dall'app ogni 2 secondi (solo macOS).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct IndicatorState {
     pub stats: Stats,
     pub hm: (u32, u32),
@@ -51,6 +53,19 @@ pub struct Wallpapers {
     overlays: HashMap<wgpu::TextureFormat, Overlay>,
     /// Cruscotto: statistiche e lancette, solo se uno schermo lo mostra.
     dash: Option<crate::dash::DashRuntime>,
+    /// Ciò che finisce nell'immagine oltre allo shader (logo, indicatori): se cambia,
+    /// gli sfondi fissi vanno ridisegnati.
+    drawn: Option<(bool, crate::config::Indicators, Option<IndicatorState>)>,
+    /// Ultimo ridisegno di sicurezza degli sfondi fissi.
+    refreshed: Instant,
+}
+
+/// Anche se niente cambia, gli sfondi fissi si ridisegnano ogni tanto: se il sistema
+/// avesse perso l'immagine, torna da sola.
+const STILL_REFRESH: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn is_still(catalog: &[Wallpaper], id: &str) -> bool {
+    catalog.iter().find(|w| w.id == id).or(catalog.first()).map(|w| w.still).unwrap_or(false)
 }
 
 pub fn monitor_key(m: &MonitorHandle) -> String {
@@ -112,7 +127,17 @@ fn create_window(el: &ActiveEventLoop, m: &MonitorHandle) -> Option<Arc<Window>>
 impl Wallpapers {
     pub fn new() -> Self {
         let now = Instant::now();
-        Self { screens: HashMap::new(), monitors: Vec::new(), monitor_sig: String::new(), start: now, changed: now, overlays: HashMap::new(), dash: None }
+        Self {
+            screens: HashMap::new(),
+            monitors: Vec::new(),
+            monitor_sig: String::new(),
+            start: now,
+            changed: now,
+            overlays: HashMap::new(),
+            drawn: None,
+            refreshed: now,
+            dash: None,
+        }
     }
 
     pub fn owns(&self, id: WindowId) -> bool {
@@ -221,7 +246,7 @@ impl Wallpapers {
                 cfg!(target_os = "macos") && cfg.indicators.enabled,
             );
             let target = g.make_target(window, surface, scale);
-            self.screens.insert(id, Screen { target, size, wallpaper, offset, canvas, occluded: false, global, phys });
+            self.screens.insert(id, Screen { target, size, wallpaper, offset, canvas, occluded: false, dirty: true, global, phys });
         }
         self.changed = Instant::now();
         log(format!("Sfondi: {} schermi, modalità {:?}", self.screens.len(), cfg.mode));
@@ -260,6 +285,27 @@ impl Wallpapers {
         self.dash = None;
     }
 
+
+    /// C'è qualcosa da disegnare al prossimo giro? Falso quando tutti gli schermi visibili
+    /// hanno uno sfondo fisso già disegnato: allora la GPU resta ferma.
+    pub fn wants_frame(&self, catalog: &[Wallpaper], cfg: &Config, ind: Option<&IndicatorState>) -> bool {
+        let visible = || self.screens.values().filter(|s| !s.occluded);
+        if visible().any(|s| s.dirty || !is_still(catalog, &s.wallpaper)) {
+            return true;
+        }
+        visible().next().is_some() && (self.inputs_changed(cfg, ind) || self.refreshed.elapsed() >= STILL_REFRESH)
+    }
+
+    fn inputs_changed(&self, cfg: &Config, ind: Option<&IndicatorState>) -> bool {
+        let ind = ind.filter(|_| cfg.indicators.enabled);
+        !matches!(&self.drawn, Some((logo, i, st)) if *logo == cfg.show_logo && *i == cfg.indicators && st.as_ref() == ind)
+    }
+
+    /// Momento in cui gli sfondi fissi vanno ridisegnati comunque (vedi STILL_REFRESH).
+    pub fn next_refresh(&self) -> Instant {
+        self.refreshed + STILL_REFRESH
+    }
+
     pub fn render(&mut self, gpu: &mut Gpu, cfg: &Config, catalog: &[Wallpaper], ind: Option<&IndicatorState>, office: crate::dash::DashOffice) {
         if self.screens.is_empty() {
             return;
@@ -278,11 +324,25 @@ impl Wallpapers {
         let opacity = { let t = ((since - 1.3) / (2.6 - 1.3)).clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) };
         let dash_stats = self.dash.as_mut().map(|d| d.step(since));
         let road = self.dash.as_ref().map(|d| d.road).unwrap_or(0.0);
+        // Logo o indicatori cambiati (o ridisegno di sicurezza): gli sfondi fissi vanno ridisegnati.
+        if self.inputs_changed(cfg, ind) || self.refreshed.elapsed() >= STILL_REFRESH {
+            self.drawn = Some((cfg.show_logo, cfg.indicators.clone(), ind.copied()));
+            self.refreshed = Instant::now();
+            for s in self.screens.values_mut() {
+                s.dirty = true;
+            }
+        }
         for screen in self.screens.values_mut() {
             if screen.occluded {
                 continue;
             }
+            let w = catalog.iter().find(|w| w.id == screen.wallpaper).unwrap_or(&catalog[0]);
+            if w.still && !screen.dirty {
+                continue;
+            }
             let size = screen.target.window.inner_size();
+            // Gli sfondi fissi non hanno animazione d'apertura: tutto è già al suo posto.
+            let (since, opacity) = if w.still { (1_000.0, 1.0) } else { (since, opacity) };
             let params = Params {
                 res: [size.width as f32, size.height as f32],
                 offset: screen.offset,
@@ -291,10 +351,10 @@ impl Wallpapers {
                 since,
                 logo_on: logo,
                 scale: screen.target.scale,
-                _pad: [0.0; 2],
+                still: if w.still { 1.0 } else { 0.0 },
+                _pad: 0.0,
                 dash: [road, 0.0, 0.0, 0.0],
             };
-            let w = catalog.iter().find(|w| w.id == screen.wallpaper).unwrap_or(&catalog[0]);
             if w.id == crate::dash::ID {
                 if let (Some(rt), Some(stats)) = (self.dash.as_mut(), dash_stats) {
                     let frame = crate::dash::DashFrame {
@@ -309,11 +369,11 @@ impl Wallpapers {
                     };
                     let format = screen.target.format;
                     let mut extra = |g: &Gpu, enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| rt.draw(g, enc, view, format, &frame);
-                    gpu.draw(&mut screen.target, w, params, Some(&mut extra));
+                    screen.dirty = !gpu.draw(&mut screen.target, w, params, Some(&mut extra));
                     continue;
                 }
             }
-            match ind.filter(|_| dock_screen(&screen.global)) {
+            let done = match ind.filter(|_| dock_screen(&screen.global)) {
                 Some(state) => {
                     let format = screen.target.format;
                     let overlay = self.overlays.entry(format).or_insert_with(|| Overlay::new(gpu, format));
@@ -325,17 +385,23 @@ impl Wallpapers {
                     let size_px = [screen.target.config.width, screen.target.config.height];
                     let ppp = (screen.target.window.scale_factor() as f32) * screen.target.scale;
                     let mut extra = |g: &Gpu, enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| overlay.draw(g, enc, view, size_px, ppp, &frame);
-                    gpu.draw(&mut screen.target, w, params, Some(&mut extra));
+                    gpu.draw(&mut screen.target, w, params, Some(&mut extra))
                 }
                 None => gpu.draw(&mut screen.target, w, params, None),
-            }
+            };
+            // Se la superficie non era pronta si riprova al prossimo giro.
+            screen.dirty = !done;
         }
     }
 
     pub fn window_event(&mut self, gpu: Option<&Gpu>, cfg: &Config, id: WindowId, event: WindowEvent) {
         let Some(s) = self.screens.get_mut(&id) else { return };
         match event {
-            WindowEvent::Occluded(o) => s.occluded = o,
+            WindowEvent::Occluded(o) => {
+                s.occluded = o;
+                s.dirty |= !o;
+            }
+            WindowEvent::RedrawRequested => s.dirty = true,
             // Schermi con scala diversa (es. portatile al 150% + esterno al 100%): Windows
             // proporrebbe di ridimensionare la finestra quando cambia schermo. Deve invece
             // restare grande esattamente quanto lo schermo.
@@ -343,6 +409,7 @@ impl Wallpapers {
                 let _ = inner_size_writer.request_inner_size(s.size);
             }
             WindowEvent::Resized(size) => {
+                s.dirty = true;
                 if let Some(gpu) = gpu {
                     gpu.resize(&mut s.target, size.width, size.height);
                 }

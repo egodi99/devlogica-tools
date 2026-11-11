@@ -4,7 +4,7 @@ L'app dell'ufficio DevLogica, per **Windows** e **macOS**:
 
 - **Avvisi di call**: quando un collega entra in call, sugli altri PC compare un avviso. Il riconoscimento è automatico per Teams, Slack, Zoom, Meet e le altre app.
 - **Pausa caffè**: qualcuno la propone, gli altri rispondono *Vengo!* o *Non posso*, e tutti vedono le risposte in tempo reale.
-- **Sfondi animati**: cinque sfondi disegnati dalla scheda grafica, con supporto multimonitor. Tra questi il **Cruscotto**: la plancia di un camion anni '90 di notte, con gli strumenti che mostrano CPU, RAM, GPU, WSL, Docker, disco e rete in tempo reale.
+- **Sfondi**: otto sfondi animati e tre fissi disegnati dalla scheda grafica, con supporto multimonitor. Tra questi il **Cruscotto**: la plancia di un camion anni '90 di notte, con gli strumenti che mostrano CPU, RAM, GPU, WSL, Docker, disco e rete in tempo reale.
 
 È leggerissima: un unico eseguibile di pochi MB, senza server e senza account. I PC si parlano direttamente sulla rete dell'ufficio.
 
@@ -71,8 +71,12 @@ Mentre sei in call (riconosciuta in automatico o avviata a mano) l'app non ti in
 
 Quando chiudi la call ti arriva quello che è ancora in corso: l'invito alla pausa caffè, se è ancora aperta, e l'avviso dei colleghi ancora in call. Quello che è finito nel frattempo non compare.
 
-### Sfondi animati
-Si trovano nel menu → *Sfondi animati*, con queste opzioni:
+### Sfondi
+Si scelgono in **Impostazioni → Sfondi** o dal menu dell'icona → *Sfondi*:
+- **animati**: Lame di luce, Barre diagonali, Geometrie, Reticolo, Cruscotto, Costellazione, Flusso, Aurora;
+- **fissi**: Quiete, Prisma, Isoipse. Vengono disegnati una volta sola e ridisegnati solo quando serve (cambio di schermo, logo o indicatori), quindi a riposo la scheda grafica non lavora.
+
+Le opzioni:
 - attivi o disattivati;
 - stesso sfondo su ogni schermo, uno diverso per schermo, oppure uno solo esteso su tutti;
 - fluidità e risoluzione (le versioni ridotte consumano meno);
@@ -92,7 +96,7 @@ Su Windows i dati arrivano dagli stessi contatori di Gestione attività (nessun 
 ### Indicatori sullo sfondo (solo macOS)
 Ai lati del Dock, dentro lo sfondo animato, l'app mostra **CPU**, **RAM**, **orologio** e **logo DevLogica**.
 Si configurano in **Impostazioni → Indicatori sullo sfondo**:
-- attivi o disattivati (anche dal menu → *Sfondi animati* → *Mostra gli indicatori*);
+- attivi o disattivati (anche dal menu → *Sfondi* → *Mostra gli indicatori*);
 - lo stile: *Solo testo*, *Pillole come il Dock* oppure *Orologio grande*;
 - per ogni elemento: *Nascosto*, *Sinistra* o *Destra* del Dock.
 
@@ -211,11 +215,11 @@ Dalla scheda *Actions* si può anche lanciare la pipeline a mano (*Run workflow*
 
 ### Strumenti utili
 ```bash
-devlogica-tools --snapshot lame 3840 2160 20 lame.png     # immagine statica di uno sfondo
+devlogica-tools --snapshot lame 3840 2160 20 lame.png     # immagine statica di uno sfondo (anche un file .wgsl)
 devlogica-tools --ui call anteprima.png                   # anteprima di una finestra (call, caffe, conferma, menu, impostazioni)
 devlogica-tools --ui impostazioni:sfondi anteprima.png    # una pagina delle impostazioni (call, avvisi, sfondi, mie, diagnostica, info)
 devlogica-tools --statistiche                             # letture del cruscotto su questo PC, per qualche secondo
-devlogica-tools --bench cruscotto 1920 1080               # tempo per fotogramma di uno sfondo
+devlogica-tools --bench [sfondo | file.wgsl] [larg alt]   # ms per fotogramma (senza sfondo: tutti)
 devlogica-tools --notifica-prova                          # mostra una notifica di prova (su macOS lanciala dall'app .app)
 DEVLOGICA_FAKE_VERSION=1.0.0 devlogica-tools              # finge una versione vecchia per provare l'aggiornamento
 ```
@@ -236,7 +240,7 @@ src/callstats.rs     statistiche delle mie call: periodi, totali, grafico, forma
 src/callstore.rs     archivio delle mie call in call.json, salvataggio atomico (con test)
 src/statsui.rs       finestra "Le mie call" (egui)
 src/tray.rs          menu e icona della barra di sistema
-src/wallpaper.rs     sfondi animati per schermo e modalità multimonitor
+src/wallpaper.rs     sfondi per schermo, modalità multimonitor, ridisegno degli sfondi fissi
 src/render.rs        GPU (wgpu): shader degli sfondi e logo
 src/indicators.rs    indicatori sullo sfondo: ordine, spazio accanto al Dock, formati (con test)
 src/overlay.rs       disegno degli indicatori sopra lo sfondo (egui)
@@ -251,9 +255,12 @@ esempi/onde.wgsl     esempio di sfondo personalizzato
 ```
 
 ### Sfondi personalizzati
-Menu → *Sfondi animati* → *Apri cartella sfondi personalizzati*, copia lì un file `.wgsl` e poi scegli *Ricarica sfondi*.
+Menu → *Sfondi* → *Apri cartella sfondi personalizzati*, copia lì un file `.wgsl` e poi scegli *Ricarica sfondi*.
 Uno sfondo definisce due funzioni:
 - `fn scene(p: vec2f) -> vec3f`, che dà il colore del pixel;
 - `fn logo_layout() -> vec3f`, che dà posizione e larghezza del logo.
+
+Per uno sfondo fisso aggiungi `// tipo: fisso` nelle prime righe di commento: l'app lo disegna una volta sola, quindi non deve usare `u.time`.
+Uno sfondo animato viene ridisegnato a ogni fotogramma: con `--bench` puoi controllare quanto costa (meglio stare sotto i 3 ms).
 
 Puoi partire da `esempi/onde.wgsl`.

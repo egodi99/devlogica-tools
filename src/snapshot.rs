@@ -67,7 +67,7 @@ pub fn run_ui(args: &[String]) -> i32 {
     if page == ui::Page::Wallpaper {
         let mut g2 = Gpu::new(render::new_instance(), None).ok();
         for wp in &catalog {
-            let params = Params { res: [384.0, 216.0], canvas: [384.0, 216.0], time: 24.0, since: 60.0, logo_on: 1.0, scale: 1.0, ..Default::default() };
+            let params = Params { res: [384.0, 216.0], canvas: [384.0, 216.0], time: 24.0, since: 60.0, logo_on: 1.0, scale: 1.0, still: if wp.still { 1.0 } else { 0.0 }, ..Default::default() };
             if let Some(px) = g2.as_mut().and_then(|g| crate::dash::thumbnail(g, wp, params)) {
                 thumbs.push((wp.id.clone(), std::sync::Arc::new(egui::ColorImage::from_rgba_unmultiplied([384, 216], &px))));
             }
@@ -136,6 +136,64 @@ pub fn run_ui(args: &[String]) -> i32 {
     }
 }
 
+/// Misura il costo GPU degli sfondi:
+///   --bench [sfondo | file.wgsl ...] [larghezza altezza [fotogrammi]]
+/// Senza sfondi li misura tutti. Stampa i millisecondi per fotogramma (solo lo shader, senza
+/// leggere i pixel) e il carico stimato a 30 fps.
+pub fn run_bench(args: &[String]) -> i32 {
+    let nums: Vec<u32> = args.iter().filter_map(|s| s.parse().ok()).collect();
+    let width = nums.first().copied().unwrap_or(2560);
+    let height = nums.get(1).copied().unwrap_or(1440);
+    let frames = nums.get(2).copied().unwrap_or(60).max(1);
+    let cat = wallpapers::catalog();
+    let mut list = Vec::new();
+    for a in args.iter().filter(|s| s.parse::<u32>().is_err()) {
+        if a.ends_with(".wgsl") {
+            let Ok(source) = std::fs::read_to_string(a) else {
+                eprintln!("file non leggibile: {a}");
+                return 2;
+            };
+            let still = wallpapers::is_still(&source);
+            list.push(wallpapers::Wallpaper { id: a.clone(), name: a.clone(), source, still });
+        } else if let Some(w) = cat.iter().find(|w| &w.id == a) {
+            list.push(w.clone());
+        } else {
+            eprintln!("sfondo sconosciuto: {a}");
+            eprintln!("sfondi: {}", cat.iter().map(|w| w.id.clone()).collect::<Vec<_>>().join(", "));
+            return 2;
+        }
+    }
+    if list.is_empty() {
+        list = cat;
+    }
+    let mut gpu = match Gpu::new(render::new_instance(), None) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    println!("{width}×{height}, {frames} fotogrammi");
+    for w in list {
+        let params = Params {
+            res: [width as f32, height as f32],
+            offset: [0.0, 0.0],
+            canvas: [width as f32, height as f32],
+            time: 20.0,
+            since: 60.0,
+            logo_on: 1.0,
+            scale: 1.0,
+            still: if w.still { 1.0 } else { 0.0 },
+            ..Default::default()
+        };
+        match gpu.bench(&w, params, frames) {
+            Some(ms) => println!("{:<24} {:>7.2} ms   ~{:>3.0}% a 30 fps", w.id, ms, ms * 30.0 / 10.0),
+            None => println!("{:<24} errore", w.id),
+        }
+    }
+    0
+}
+
 /// Call di esempio per l'anteprima: giorni lavorativi dell'ultimo anno con Teams, Slack e
 /// Meet (durate pseudo-casuali ma fisse), più una call Teams in corso da 25 minuti.
 fn example_calls(now: f64) -> Vec<crate::callstats::Segment> {
@@ -175,7 +233,14 @@ pub fn run(args: &[String]) -> i32 {
         eprintln!("sfondi: {}", wallpapers::catalog().iter().map(|w| w.id.clone()).collect::<Vec<_>>().join(", "));
         return 2;
     }
-    let cat = wallpapers::catalog();
+    let mut cat = wallpapers::catalog();
+    // Si può indicare anche un file .wgsl, per provare uno sfondo senza installarlo.
+    if args[0].ends_with(".wgsl") {
+        if let Ok(source) = std::fs::read_to_string(&args[0]) {
+            let still = wallpapers::is_still(&source);
+            cat.push(wallpapers::Wallpaper { id: args[0].clone(), name: args[0].clone(), source, still });
+        }
+    }
     let Some(w) = cat.iter().find(|w| w.id == args[0]) else {
         eprintln!("sfondo sconosciuto: {}", args[0]);
         return 2;
@@ -205,7 +270,8 @@ pub fn run(args: &[String]) -> i32 {
         since: 60.0,
         logo_on: if logo { 1.0 } else { 0.0 },
         scale: args.iter().position(|a| a == "--scale").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(1.0),
-        _pad: [0.0; 2],
+        still: if w.still { 1.0 } else { 0.0 },
+        _pad: 0.0,
         dash: [0.0; 4],
     };
     // Indicatori con dati di esempio, come sullo schermo con il Dock (Dock al centro, largo il 47%).
@@ -255,26 +321,4 @@ pub fn run(args: &[String]) -> i32 {
             1
         }
     }
-}
-
-/// Tempo medio per fotogramma di uno sfondo (solo shader), fuori schermo:
-///   --bench <sfondo> [larghezza altezza]
-pub fn bench(args: &[String]) -> i32 {
-    let cat = wallpapers::catalog();
-    let Some(w) = args.first().and_then(|id| cat.iter().find(|w| &w.id == id)) else {
-        eprintln!("uso: --bench <sfondo> [larghezza altezza]");
-        return 2;
-    };
-    let (width, height): (f32, f32) = (args.get(1).and_then(|s| s.parse().ok()).unwrap_or(1920.0), args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1080.0));
-    let Ok(mut gpu) = Gpu::new(render::new_instance(), None) else { return 1 };
-    let mut params = Params { res: [width, height], canvas: [width, height], since: 60.0, logo_on: 1.0, scale: 1.0, ..Default::default() };
-    let _ = gpu.render_offscreen(w, params, None);
-    let n = 30;
-    let t0 = std::time::Instant::now();
-    for i in 0..n {
-        params.time = i as f32 * 0.033;
-        let _ = gpu.render_offscreen(w, params, None);
-    }
-    println!("{}: {:.1} ms/fotogramma a {}x{} (compresa la lettura dei pixel)", w.id, t0.elapsed().as_secs_f64() * 1000.0 / n as f64, width, height);
-    0
 }

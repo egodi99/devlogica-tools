@@ -55,7 +55,7 @@ fn lines(v: &View) -> Vec<Line> {
             } else {
                 v.catalog.iter().find(|w| w.id == v.cfg.wallpaper).map(|w| w.name.clone()).unwrap_or_default()
             };
-            out.push(Line::Item { icon: ic::PICTURE, label: "Sfondi animati".into(), trail: Some(wp), chevron: true, color: theme::TEXT, action: Act::Page(TrayPage::Wallpaper) });
+            out.push(Line::Item { icon: ic::PICTURE, label: "Sfondi".into(), trail: Some(wp), chevron: true, color: theme::TEXT, action: Act::Page(TrayPage::Wallpaper) });
             out.push(item(ic::CHART, "Le mie call", Act::Menu(Action::OpenCallStats)));
             out.push(item(ic::GEAR, "Impostazioni", Act::Ui(UiAction::OpenSettings(Page::Home))));
             out.push(Line::Sep);
@@ -80,10 +80,21 @@ fn lines(v: &View) -> Vec<Line> {
             }
         }
         TrayPage::Wallpaper => {
-            out.push(Line::Toggle { label: "Sfondi animati", on: v.cfg.wallpaper_enabled, action: Act::Menu(Action::ToggleWallpaper) });
+            out.push(Line::Toggle { label: "Sfondi attivi", on: v.cfg.wallpaper_enabled, action: Act::Menu(Action::ToggleWallpaper) });
             if v.cfg.wallpaper_enabled {
                 out.push(Line::Sep);
-                for w in v.catalog {
+                for (w, first_still) in crate::tray::with_sections(v.catalog) {
+                    if first_still {
+                        out.push(Line::Sep);
+                        out.push(Line::Item {
+                            icon: "",
+                            label: "Fissi — nessun consumo".into(),
+                            trail: None,
+                            chevron: false,
+                            color: theme::TEXT_3,
+                            action: Act::Page(TrayPage::Wallpaper),
+                        });
+                    }
                     let sel = w.id == v.cfg.wallpaper;
                     out.push(Line::Item {
                         icon: if sel { ic::CHECK } else { "" },
@@ -161,7 +172,7 @@ pub fn popup(ui: &mut egui::Ui, v: &mut View) {
             y += SEP;
         }
         TrayPage::Coffee | TrayPage::Wallpaper => {
-            let title = if *v.tray_page == TrayPage::Coffee { "Pausa caffè" } else { "Sfondi animati" };
+            let title = if *v.tray_page == TrayPage::Coffee { "Pausa caffè" } else { "Sfondi" };
             let r = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, BACK));
             let back = Rect::from_min_size(Pos2::new(r.left() + 4.0, r.center().y - 15.0), Vec2::splat(30.0));
             let resp = ui.interact(back, ui.id().with("indietro"), Sense::click());

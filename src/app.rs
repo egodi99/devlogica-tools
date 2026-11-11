@@ -604,6 +604,7 @@ impl App {
                 since: 60.0,
                 logo_on: if self.cfg.show_logo { 1.0 } else { 0.0 },
                 scale: 1.0,
+                still: if wp.still { 1.0 } else { 0.0 },
                 ..Default::default()
             };
             let px = crate::dash::thumbnail(gpu, wp, params);
@@ -1238,7 +1239,10 @@ impl ApplicationHandler<UserEvent> for App {
 
         // sfondi
         let wall_on = self.cfg.wallpaper_enabled && !self.cfg.paused && !self.fullscreen;
-        if wall_on && now >= self.next_frame {
+        // Con soli sfondi fissi già disegnati non serve svegliarsi a ogni fotogramma: si
+        // ridisegna quando cambia qualcosa (eventi, indicatori ogni 2 s) o per sicurezza.
+        let wall_frames = wall_on && self.wall.wants_frame(&self.catalog, &self.cfg, self.ind_state.as_ref());
+        if wall_frames && now >= self.next_frame {
             if let Some(gpu) = self.gpu.as_mut() {
                 let office = crate::dash::DashOffice {
                     call: !self.office.calls.is_empty(),
@@ -1269,8 +1273,10 @@ impl ApplicationHandler<UserEvent> for App {
 
         // prossimo risveglio
         let mut wake = self.next_check.min(self.next_detect).min(self.next_alive);
-        if wall_on {
+        if wall_frames {
             wake = wake.min(self.next_frame);
+        } else if wall_on {
+            wake = wake.min(self.wall.next_refresh());
         }
         if !self.edges.is_empty() {
             wake = wake.min(self.next_edge);

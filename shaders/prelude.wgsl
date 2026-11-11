@@ -4,6 +4,8 @@
 //     fn scene(p: vec2f) -> vec3f      colore del pixel p (coordinate della tela, in pixel, y verso il basso)
 //     fn logo_layout() -> vec3f        (centro x, centro y, larghezza) del logo, in pixel della tela
 //  Tutto il resto (vertici, logo, retinatura anti-banding) è gestito qui.
+//  Uno sfondo fisso dichiara "// tipo: fisso" nell'intestazione: viene disegnato una
+//  volta sola, quindi può permettersi più dettagli, ma non deve usare u.time.
 // ============================================================================
 
 struct Params {
@@ -14,7 +16,8 @@ struct Params {
     since: f32,      // secondi dall'ultimo cambio di sfondo
     logo_on: f32,
     scale: f32,      // pixel disegnati / pixel della finestra
-    _p1: f32, _p2: f32,
+    still: f32,      // 1 = sfondo fisso (disegnato una volta sola)
+    _p2: f32,
     dash: vec4f,     // cruscotto: x = strada percorsa
 };
 
@@ -72,12 +75,12 @@ fn apply_logo(p: vec2f, col: vec3f) -> vec3f {
     let s = textureSample(logo_tex, logo_smp, uv); // premoltiplicato
     let inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
     // comparsa dopo l'animazione d'apertura
-    let a = smoothstep(1.3, 2.6, u.since) * inside * u.logo_on;
+    let a = max(smoothstep(1.3, 2.6, u.since), u.still) * inside * u.logo_on;
     var c = col * (1.0 - s.a * a) + s.rgb * a;
-    // riflesso diagonale che attraversa il logo ogni 12 secondi
+    // riflesso diagonale che attraversa il logo ogni 12 secondi (non sugli sfondi fissi)
     let ph = fract(u.time / 12.0) * 1.6 - 0.3;
     let band = uv.x + (uv.y - 0.5) * 0.35 - ph * 1.4;
-    c += vec3f(1.0) * s.a * a * 0.45 * exp(-band * band * 180.0);
+    c += vec3f(1.0) * s.a * a * 0.45 * exp(-band * band * 180.0) * (1.0 - u.still);
     return c;
 }
 
@@ -87,6 +90,6 @@ fn fs_main(@builtin(position) fc: vec4f) -> @location(0) vec4f {
     var col = scene(p);
     col = apply_logo(p, col);
     // retinatura leggera: elimina le "scalette" nei gradienti scuri
-    col += (hash21(p + fract(u.time) * 17.0) - 0.5) / 255.0 * 1.5;
+    col += (hash21(p + fract(u.time) * 17.0 * (1.0 - u.still)) - 0.5) / 255.0 * 1.5;
     return vec4f(clamp(col, vec3f(0.0), vec3f(1.0)), 1.0);
 }

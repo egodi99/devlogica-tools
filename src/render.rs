@@ -28,7 +28,9 @@ pub struct Params {
     pub logo_on: f32,
     /// Rapporto tra pixel disegnati e pixel della finestra (1 = risoluzione piena).
     pub scale: f32,
-    pub _pad: [f32; 2],
+    /// 1 per gli sfondi fissi: logo subito visibile, niente riflesso né retinatura animata.
+    pub still: f32,
+    pub _pad: f32,
     /// Dati del cruscotto: x = distanza percorsa dalla strada (gli altri sfondi la ignorano).
     pub dash: [f32; 4],
 }
@@ -302,14 +304,15 @@ impl Gpu {
         t.surface.configure(&self.device, &t.config);
     }
 
-    pub fn draw(&mut self, t: &mut Target, w: &Wallpaper, params: Params, extra: Option<Extra>) {
+    /// Disegna e presenta un fotogramma. `false` se non è stato possibile (superficie non pronta).
+    pub fn draw(&mut self, t: &mut Target, w: &Wallpaper, params: Params, extra: Option<Extra>) -> bool {
         let frame = match t.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return,
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return false,
             _ => {
                 // Superficie persa o obsoleta (cambio risoluzione, monitor scollegato...): la si ricrea.
                 t.surface.configure(&self.device, &t.config);
-                return;
+                return false;
             }
         };
         self.queue.write_buffer(&t.uniforms, 0, bytemuck::bytes_of(&params));
@@ -320,7 +323,7 @@ impl Gpu {
             clear_pass(&mut enc, &view);
             self.queue.submit([enc.finish()]);
             self.queue.present(frame);
-            return;
+            return true;
         };
         let pipeline = pipeline.clone();
         let mut enc = self.device.create_command_encoder(&Default::default());
@@ -335,6 +338,48 @@ impl Gpu {
         }
         self.queue.submit([enc.finish()]);
         self.queue.present(frame);
+        true
+    }
+
+    /// Misura il tempo medio (ms) per disegnare un fotogramma fuori schermo, attendendo la GPU
+    /// a ogni fotogramma. Usato dall'opzione --bench.
+    pub fn bench(&mut self, w: &Wallpaper, params: Params, frames: u32) -> Option<f64> {
+        let (width, height) = scaled(params.res[0] as u32, params.res[1] as u32, params.scale);
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("bench"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&Default::default());
+        let uniforms = self.uniform_buffer();
+        let bind_group = self.bind_group(&uniforms);
+        let pipeline = self.pipeline(w, self.format)?.clone();
+        let mut total = std::time::Duration::ZERO;
+        for i in 0..frames + 3 {
+            let mut p = params;
+            p.time += i as f32 / 30.0;
+            self.queue.write_buffer(&uniforms, 0, bytemuck::bytes_of(&p));
+            let start = std::time::Instant::now();
+            let mut enc = self.device.create_command_encoder(&Default::default());
+            {
+                let mut pass = begin_pass(&mut enc, &view);
+                pass.set_pipeline(&pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            self.queue.submit([enc.finish()]);
+            self.device.poll(wgpu::PollType::wait_indefinitely()).ok()?;
+            // i primi fotogrammi scaldano la GPU e non contano
+            if i >= 3 {
+                total += start.elapsed();
+            }
+        }
+        Some(total.as_secs_f64() * 1000.0 / frames as f64)
     }
 
     /// Disegna uno sfondo su una texture fuori schermo e restituisce i pixel RGBA.

@@ -123,7 +123,7 @@ pub fn build(s: &MenuState) -> Built {
     let _ = menu.append(&PredefinedMenuItem::separator());
 
     // ---- sfondi ----
-    let wall = Submenu::new("Sfondi animati", true);
+    let wall = Submenu::new("Sfondi", true);
     let _ = wall.append(&check("Attivi", cfg.wallpaper_enabled, Action::ToggleWallpaper));
     let _ = wall.append(&PredefinedMenuItem::separator());
     let modes = Submenu::new("Schermi", cfg.wallpaper_enabled);
@@ -139,7 +139,11 @@ pub fn build(s: &MenuState) -> Built {
         for (i, mon) in s.monitors.iter().enumerate() {
             let current = cfg.per_monitor.get(&mon.key).unwrap_or(&cfg.wallpaper);
             let sub = Submenu::new(format!("Schermo {} — {}", i + 1, mon.label), cfg.wallpaper_enabled);
-            for w in s.catalog {
+            for (w, first_still) in with_sections(s.catalog) {
+                if first_still {
+                    let _ = sub.append(&PredefinedMenuItem::separator());
+                    let _ = sub.append(&item("Fissi — nessun consumo", false, None));
+                }
                 let _ = sub.append(&check(
                     &w.name,
                     *current == w.id,
@@ -150,7 +154,11 @@ pub fn build(s: &MenuState) -> Built {
         }
     } else {
         let sub = Submenu::new("Sfondo", cfg.wallpaper_enabled);
-        for w in s.catalog {
+        for (w, first_still) in with_sections(s.catalog) {
+            if first_still {
+                let _ = sub.append(&PredefinedMenuItem::separator());
+                let _ = sub.append(&item("Fissi — nessun consumo", false, None));
+            }
             let _ = sub.append(&check(&w.name, cfg.wallpaper == w.id, Action::SetWallpaper(w.id.clone())));
         }
         let _ = wall.append(&sub);
@@ -237,4 +245,13 @@ pub fn icon(badge: Badge) -> tray_icon::Icon {
         }
     }
     tray_icon::Icon::from_rgba(img.into_raw(), w, h).expect("icona")
+}
+
+/// Prima gli sfondi animati, poi quelli fissi; il secondo valore segna il primo fisso
+/// (dove va l'intestazione della sezione).
+pub fn with_sections(catalog: &[Wallpaper]) -> Vec<(&Wallpaper, bool)> {
+    let animated = catalog.iter().filter(|w| !w.still);
+    let still = catalog.iter().filter(|w| w.still);
+    let has_animated = catalog.iter().any(|w| !w.still);
+    animated.map(|w| (w, false)).chain(still.enumerate().map(|(i, w)| (w, i == 0 && has_animated))).collect()
 }

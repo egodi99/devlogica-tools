@@ -511,9 +511,9 @@ fn alerts_page(ui: &mut egui::Ui, v: &mut View) {
 }
 
 fn wallpaper_page(ui: &mut egui::Ui, v: &mut View) {
-    page_header(ui, "Sfondi animati", "Disegnati dalla scheda grafica, dietro alle icone del desktop.");
+    page_header(ui, "Sfondi", "Disegnati dalla scheda grafica, dietro alle icone del desktop.");
     theme::group(ui, |g| {
-        g.row(Some(ic::PICTURE), "Sfondi animati", "Spenti, resta lo sfondo di Windows.", |ui| {
+        g.row(Some(ic::PICTURE), "Sfondi DevLogica", "Spenti, resta lo sfondo di sistema.", |ui| {
             let mut on = v.cfg.wallpaper_enabled;
             if theme::toggle(ui, &mut on).changed() {
                 v.actions.push(UiAction::Menu(Action::ToggleWallpaper));
@@ -521,8 +521,12 @@ fn wallpaper_page(ui: &mut egui::Ui, v: &mut View) {
         });
     });
     ui.add_enabled_ui(v.cfg.wallpaper_enabled, |ui| {
-        theme::section_title(ui, "Sfondo");
-        wallpaper_gallery(ui, v);
+        theme::section_title(ui, "Animati");
+        wallpaper_gallery(ui, v, false);
+        theme::section_title(ui, "Fissi");
+        ui.label(RichText::new("Disegnati una volta sola: a riposo la scheda grafica non lavora.").size(12.5).color(theme::TEXT_2));
+        ui.add_space(4.0);
+        wallpaper_gallery(ui, v, true);
         theme::section_title(ui, "Schermi e prestazioni");
         theme::group(ui, |g| {
             g.row(Some(ic::SLIDERS), "Con più schermi", "", |ui| {
@@ -592,13 +596,14 @@ fn wallpaper_page(ui: &mut egui::Ui, v: &mut View) {
     });
 }
 
-/// Galleria degli sfondi con le miniature (se l'app le ha preparate).
-fn wallpaper_gallery(ui: &mut egui::Ui, v: &mut View) {
+/// Galleria degli sfondi animati o fissi, con le miniature (se l'app le ha preparate).
+fn wallpaper_gallery(ui: &mut egui::Ui, v: &mut View, still: bool) {
     let cols = 3;
     let gap = 12.0;
     let w = (ui.available_width() - gap * (cols as f32 - 1.0)) / cols as f32;
     let th = w * 9.0 / 16.0;
-    for row in v.catalog.chunks(cols) {
+    let list: Vec<_> = v.catalog.iter().filter(|w| w.still == still).cloned().collect();
+    for row in list.chunks(cols) {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             for wp in row {
