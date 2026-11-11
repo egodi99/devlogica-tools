@@ -1,6 +1,7 @@
 //! Coordinatore: sfondi, rete, riconoscimento call, finestre di avviso e menu.
 
-use crate::config::{log, AlertStyle, Config, Detection};
+use crate::callstore::CallStore;
+use crate::config::{app_dir, log, now_ms, AlertStyle, Config, Detection};
 use crate::detect::{Detect, Detector};
 use crate::net::{Net, Packet};
 use crate::office::{Notice, Office, Outgoing};
@@ -69,6 +70,8 @@ pub struct App {
     next_check: Instant,
     next_detect: Instant,
     next_alive: Instant,
+    /// Archivio delle mie call (solo su questo PC).
+    store: CallStore,
     next_edge: Instant,
     fullscreen: bool,
     // indicatori sullo sfondo (solo macOS)
@@ -110,6 +113,7 @@ impl App {
             next_check: now + Duration::from_secs(2),
             next_detect: now + Duration::from_secs(2),
             next_alive: now + Duration::from_secs(20),
+            store: CallStore::load(app_dir().join("call.json")),
             next_edge: now,
             fullscreen: false,
             sampler: None,
@@ -273,6 +277,9 @@ impl App {
                 self.send_all(&p);
             }
             self.next_alive = Instant::now() + Duration::from_secs(20);
+            if self.cfg.record_calls {
+                self.store.begin(app.as_deref(), auto, now_ms());
+            }
         }
         self.refresh(el);
     }
@@ -286,6 +293,9 @@ impl App {
                 self.send_all(&p);
             }
             self.show_notices(notices);
+            if self.cfg.record_calls {
+                self.store.end(now_ms());
+            }
         }
         self.refresh(el);
     }
@@ -364,7 +374,7 @@ impl App {
         self.refresh(el);
     }
 
-    fn handle_ui(&mut self, el: &ActiveEventLoop, actions: Vec<UiAction>, old_name: &str) {
+    fn handle_ui(&mut self, el: &ActiveEventLoop, actions: Vec<UiAction>, old_name: &str, old_record: bool) {
         let me = self.me();
         for a in actions {
             match a {
@@ -401,6 +411,13 @@ impl App {
                 }
                 UiAction::ConfigChanged => {
                     self.cfg.save();
+                    if self.cfg.record_calls != old_record {
+                        if !self.cfg.record_calls {
+                            self.store.end(now_ms());
+                        } else if let Some(m) = self.office.my_call.as_ref() {
+                            self.store.begin(m.app.as_deref(), m.auto, now_ms());
+                        }
+                    }
                     if self.me() != old_name {
                         // nome cambiato: se ero in call la ri-annuncio con il nome nuovo
                         let me = self.me();
@@ -426,6 +443,9 @@ impl App {
             for p in self.office.leave_dnd(&me).1 {
                 self.send_all(&p);
             }
+        }
+        if self.cfg.record_calls {
+            self.store.end(now_ms());
         }
         if let Some(p) = self.office.end_coffee(&me) {
             self.send_all(&p);
@@ -526,6 +546,7 @@ impl App {
         let Some(gpu) = self.gpu.as_ref() else { return };
         let now = Instant::now();
         let old_name = self.me();
+        let old_record = self.cfg.record_calls;
         let mut actions = Vec::new();
         let peers: Vec<String> = self.office.peers.keys().cloned().collect();
         let me = self.me();
@@ -556,7 +577,7 @@ impl App {
         }
         actions.append(&mut view.actions);
         if !actions.is_empty() {
-            self.handle_ui(el, actions, &old_name);
+            self.handle_ui(el, actions, &old_name, old_record);
         }
     }
 
@@ -810,6 +831,9 @@ impl ApplicationHandler<UserEvent> for App {
             let me = self.me();
             if let Some(p) = self.office.alive_packet(&me) {
                 self.send_all(&p);
+            }
+            if self.cfg.record_calls {
+                self.store.touch(now_ms());
             }
         }
 
