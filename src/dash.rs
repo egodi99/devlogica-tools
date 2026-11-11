@@ -362,15 +362,14 @@ impl DashOverlay {
         let mut defs = egui::FontDefinitions::default();
         let base = defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
         let mut din_list = base.clone();
+        // ripiego incluso, dove Bahnschrift non c'è (macOS): Barlow, della stessa famiglia DIN
+        defs.font_data.insert("barlow".into(), Arc::new(egui::FontData::from_static(theme::BARLOW)));
+        din_list.insert(0, "barlow".into());
         if let Some(b) = theme::system_font(&["bahnschrift.ttf"]) {
             defs.font_data.insert("bahnschrift".into(), b);
             din_list.insert(0, "bahnschrift".into());
         }
-        let mut ic_list = base;
-        if let Some(i) = theme::system_font(&["SegoeIcons.ttf", "segmdl2.ttf"]) {
-            defs.font_data.insert("fluent".into(), i);
-            ic_list.insert(0, "fluent".into());
-        }
+        let ic_list: Vec<String> = theme::add_icon_fonts(&mut defs).into_iter().chain(base).collect();
         defs.families.insert(din(), din_list);
         defs.families.insert(icons(), ic_list);
         ctx.set_fonts(defs);

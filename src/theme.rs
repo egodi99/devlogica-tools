@@ -6,7 +6,6 @@
 //! (macOS, Windows senza il carattere delle icone) si usano quelli di egui e le icone spariscono.
 
 use egui::{Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Vec2};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 // ---------- colori ----------
@@ -76,7 +75,15 @@ pub mod ic {
     pub const SLIDERS: &str = "\u{E9E9}";
 }
 
-static HAS_ICONS: AtomicBool = AtomicBool::new(false);
+// Caratteri inclusi nell'eseguibile (~135 KB), usati dove mancano quelli di sistema (macOS,
+// Windows 10 senza Segoe Fluent Icons). Licenze in assets/fonts.
+// - icone.ttf: icone Lucide (ISC) già rimappate sugli stessi codici di Segoe Fluent Icons,
+//   così ogni `ic::*` funziona con entrambi e si ripiega glifo per glifo;
+// - Inter (OFL) per i testi; Barlow Semi Condensed (OFL) per i numeri del cruscotto.
+const ICONS_TTF: &[u8] = include_bytes!("../assets/fonts/icone.ttf");
+const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/inter-regular.ttf");
+const INTER_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/inter-semibold.ttf");
+pub const BARLOW: &[u8] = include_bytes!("../assets/fonts/barlow-cruscotto.ttf");
 
 struct SystemFonts {
     regular: Option<Arc<egui::FontData>>,
@@ -84,7 +91,15 @@ struct SystemFonts {
     icons: Option<Arc<egui::FontData>>,
 }
 
+/// Vero se si devono ignorare i caratteri di sistema (DLT_FONTS=inclusi: anteprima dell'aspetto su macOS).
+fn only_embedded() -> bool {
+    std::env::var("DLT_FONTS").is_ok_and(|v| v == "inclusi")
+}
+
 fn font_dir() -> Option<std::path::PathBuf> {
+    if only_embedded() {
+        return None;
+    }
     if cfg!(windows) {
         let win = std::env::var_os("WINDIR").map(std::path::PathBuf::from).unwrap_or_else(|| "C:\\Windows".into());
         Some(win.join("Fonts"))
@@ -105,7 +120,8 @@ fn system_fonts() -> &'static SystemFonts {
         SystemFonts {
             regular: load(&["segoeui.ttf"]),
             semibold: load(&["seguisb.ttf", "segoeuib.ttf"]),
-            icons: load(&["SegoeIcons.ttf", "segmdl2.ttf"]),
+            // solo Segoe Fluent Icons (Windows 11): a Segoe MDL2 mancano alcune icone, meglio le nostre
+            icons: load(&["SegoeIcons.ttf"]),
         }
     })
 }
@@ -134,37 +150,43 @@ fn icon_family() -> FontFamily {
     FontFamily::Name("icons".into())
 }
 
+/// Aggiunge le icone (di sistema se ci sono, poi le nostre come ripiego) a `defs`;
+/// restituisce i nomi da mettere in testa alla famiglia delle icone.
+pub fn add_icon_fonts(defs: &mut egui::FontDefinitions) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Some(i) = &system_fonts().icons {
+        defs.font_data.insert("fluent".into(), i.clone());
+        names.push("fluent".into());
+    }
+    defs.font_data.insert("icone".into(), Arc::new(egui::FontData::from_static(ICONS_TTF)));
+    names.push("icone".into());
+    names
+}
+
 pub fn install_fonts(ctx: &egui::Context) {
     let sys = system_fonts();
     let mut defs = egui::FontDefinitions::default();
     let base: Vec<String> = defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-    let mut prop = base.clone();
-    if let Some(r) = &sys.regular {
-        defs.font_data.insert("segoe".into(), r.clone());
-        prop.insert(0, "segoe".into());
-    }
-    let mut sb = prop.clone();
-    if let Some(s) = &sys.semibold {
-        defs.font_data.insert("segoe-sb".into(), s.clone());
-        sb.insert(0, "segoe-sb".into());
-    }
-    let mut icons = base;
-    if let Some(i) = &sys.icons {
-        defs.font_data.insert("fluent".into(), i.clone());
-        icons.insert(0, "fluent".into());
-        // le icone anche come ripiego dei testi normali, per usarle dentro le etichette
-        prop.push("fluent".into());
-        sb.push("fluent".into());
-    }
-    HAS_ICONS.store(sys.icons.is_some(), Ordering::Relaxed);
+    let regular = sys.regular.clone().unwrap_or_else(|| Arc::new(egui::FontData::from_static(INTER_REGULAR)));
+    let semibold = sys.semibold.clone().unwrap_or_else(|| Arc::new(egui::FontData::from_static(INTER_SEMIBOLD)));
+    defs.font_data.insert("testo".into(), regular);
+    defs.font_data.insert("testo-sb".into(), semibold);
+    let icon_names = add_icon_fonts(&mut defs);
+    let mut prop: Vec<String> = std::iter::once("testo".to_string()).chain(base.iter().cloned()).collect();
+    let mut sb: Vec<String> = ["testo-sb", "testo"].iter().map(|s| s.to_string()).chain(base.iter().cloned()).collect();
+    // le icone anche come ripiego dei testi normali, per usarle dentro le etichette
+    prop.extend(icon_names.iter().cloned());
+    sb.extend(icon_names.iter().cloned());
+    let icons: Vec<String> = icon_names.into_iter().chain(base).collect();
     defs.families.insert(FontFamily::Proportional, prop);
     defs.families.insert(semibold_family(), sb);
     defs.families.insert(icon_family(), icons);
     ctx.set_fonts(defs);
 }
 
+/// Le icone ci sono sempre: quelle incluse fanno da ripiego.
 pub fn has_icons() -> bool {
-    HAS_ICONS.load(Ordering::Relaxed)
+    true
 }
 
 pub fn install(ctx: &egui::Context) {
