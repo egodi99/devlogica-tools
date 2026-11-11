@@ -14,7 +14,7 @@ pub fn run_ui(args: &[String]) -> i32 {
     use crate::office::Office;
     use crate::ui;
     let (Some(kind), Some(out)) = (args.first(), args.get(1)) else {
-        eprintln!("uso: --ui <call|caffe|conferma|impostazioni|statistiche> <file.png> [giorno|mese|anno]");
+        eprintln!("uso: --ui <call|caffe|conferma|menu[:caffe|:sfondi]|impostazioni[:call|:avvisi|:sfondi|:mie|:diagnostica|:info]|statistiche> <file.png> [giorno|mese|anno]");
         return 2;
     };
     let Ok(gpu) = Gpu::new(render::new_instance(), None) else { return 1 };
@@ -46,7 +46,58 @@ pub fn run_ui(args: &[String]) -> i32 {
     let today = chrono::Local::now().date_naive();
     let mut delete = ui::DeleteForm::new(today);
     let first_call_day = example_calls(t).iter().map(|s| crate::callstats::local_date(s.start_ms, &chrono::Local)).min();
-    let mut view = ui::View { cfg: &mut cfg, office: &office, me: "Emanuele".into(), mic: &mic, ask: Some("Microsoft Teams"), update: &upd, peers, ax_trusted: false, delete: &mut delete, first_call_day, actions: Vec::new() };
+    // pagina delle impostazioni: "impostazioni:sfondi" ecc.
+    let (kind, page_name) = kind.split_once(':').unwrap_or((kind.as_str(), ""));
+    let mut page = match page_name {
+        "call" => ui::Page::Calls,
+        "avvisi" => ui::Page::Alerts,
+        "sfondi" => ui::Page::Wallpaper,
+        "mie" => ui::Page::MyCalls,
+        "diagnostica" => ui::Page::Diagnostics,
+        "info" => ui::Page::About,
+        _ => ui::Page::Home,
+    };
+    let mut tray_page = match page_name {
+        "caffe" => ui::TrayPage::Coffee,
+        "sfondi" => ui::TrayPage::Wallpaper,
+        _ => ui::TrayPage::Main,
+    };
+    let catalog = crate::wallpapers::catalog();
+    let mut thumbs = Vec::new();
+    if page == ui::Page::Wallpaper {
+        let mut g2 = Gpu::new(render::new_instance(), None).ok();
+        for wp in &catalog {
+            let params = Params { res: [384.0, 216.0], canvas: [384.0, 216.0], time: 24.0, since: 60.0, logo_on: 1.0, scale: 1.0, ..Default::default() };
+            if let Some(px) = g2.as_mut().and_then(|g| crate::dash::thumbnail(g, wp, params)) {
+                thumbs.push((wp.id.clone(), std::sync::Arc::new(egui::ColorImage::from_rgba_unmultiplied([384, 216], &px))));
+            }
+        }
+    }
+    let monitors = vec![crate::tray::MonitorInfo { key: "a".into(), label: "DELL U2723QE (3840×2160)".into() }];
+    let day_rep = crate::callstats::report(&example_calls(t), Period::containing(PeriodKind::Day, today), today, &chrono::Local);
+    let week_rep = crate::callstats::report(&example_calls(t), Period::containing(PeriodKind::Week, today), today, &chrono::Local);
+    cfg.wallpaper = "cruscotto".into();
+    let mut view = ui::View {
+        cfg: &mut cfg,
+        office: &office,
+        me: "Emanuele".into(),
+        mic: &mic,
+        ask: Some("Microsoft Teams"),
+        update: &upd,
+        peers,
+        ax_trusted: false,
+        delete: &mut delete,
+        first_call_day,
+        page: &mut page,
+        tray_page: &mut tray_page,
+        week: Some(&week_rep),
+        today_ms: day_rep.total_ms,
+        autostart: true,
+        catalog: &catalog,
+        monitors: &monitors,
+        thumbs: &thumbs,
+        actions: Vec::new(),
+    };
     let kind_stats = match args.get(2).map(String::as_str) {
         Some("giorno") => PeriodKind::Day,
         Some("mese") => PeriodKind::Month,
@@ -56,22 +107,25 @@ pub fn run_ui(args: &[String]) -> i32 {
     let period = Period::containing(kind_stats, today);
     let rep = crate::callstats::report(&example_calls(t), period, today, &chrono::Local);
     let ppp = 2.0;
-    let (w, h, bg): (f64, f64, _) = match kind.as_str() {
-        "call" => (540.0, ui::call_panel_height(3), ui::RED_BG),
-        "caffe" => (420.0, ui::coffee_panel_height(3), ui::COFFEE_BG),
-        "conferma" => (380.0, 140.0, ui::INK),
+    let popup_h = crate::traymenu::height(&view);
+    let (w, h, bg): (f64, f64, _) = match kind {
+        "call" => (540.0, ui::call_panel_height(3), ui::PANEL_BG),
+        "caffe" => (420.0, ui::coffee_panel_height(3, false), ui::PANEL_BG),
+        "conferma" => (400.0, 132.0, ui::PANEL_BG),
         "statistiche" => (560.0, 640.0, ui::INK),
-        _ => (500.0, 900.0, ui::INK),
+        "menu" => (crate::traymenu::WIDTH, popup_h, ui::PANEL_BG),
+        _ => (980.0, 700.0, ui::INK),
     };
     let (pw, ph) = ((w * ppp as f64) as u32, (h * ppp as f64) as u32);
-    let px = ui::render_preview(&gpu, pw, ph, ppp, bg, |u| match kind.as_str() {
+    let px = ui::render_preview(&gpu, pw, ph, ppp, bg, |u| match kind {
         "call" => ui::call_panel(u, &mut view),
         "caffe" => ui::coffee_panel(u, &mut view),
         "conferma" => ui::ask_panel(u, &mut view),
+        "menu" => crate::traymenu::popup(u, &mut view),
         "statistiche" => {
             let _ = crate::statsui::stats_panel(u, period, today, &rep, true, true);
         }
-        _ => ui::settings(u, &mut view),
+        _ => crate::settingsui::settings(u, &mut view),
     });
     match image::save_buffer(out, &px, pw, ph, image::ExtendedColorType::Rgba8) {
         Ok(()) => 0,
@@ -152,6 +206,7 @@ pub fn run(args: &[String]) -> i32 {
         logo_on: if logo { 1.0 } else { 0.0 },
         scale: args.iter().position(|a| a == "--scale").and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok()).unwrap_or(1.0),
         _pad: [0.0; 2],
+        dash: [0.0; 4],
     };
     // Indicatori con dati di esempio, come sullo schermo con il Dock (Dock al centro, largo il 47%).
     let style = args.iter().position(|a| a == "--indicatori").and_then(|i| args.get(i + 1)).map(|s| match s.as_str() {
@@ -183,7 +238,12 @@ pub fn run(args: &[String]) -> i32 {
         }
     };
     let extra: Option<render::Extra> = if style.is_some() { Some(&mut draw_ind) } else { None };
-    let Some(px) = gpu.render_offscreen(w, params, extra) else {
+    let px = if w.id == crate::dash::ID {
+        crate::dash::render_static(&mut gpu, w, params, crate::dash::demo_stats())
+    } else {
+        gpu.render_offscreen(w, params, extra)
+    };
+    let Some(px) = px else {
         eprintln!("rendering non riuscito (errore nello shader?)");
         return 1;
     };
@@ -195,4 +255,26 @@ pub fn run(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// Tempo medio per fotogramma di uno sfondo (solo shader), fuori schermo:
+///   --bench <sfondo> [larghezza altezza]
+pub fn bench(args: &[String]) -> i32 {
+    let cat = wallpapers::catalog();
+    let Some(w) = args.first().and_then(|id| cat.iter().find(|w| &w.id == id)) else {
+        eprintln!("uso: --bench <sfondo> [larghezza altezza]");
+        return 2;
+    };
+    let (width, height): (f32, f32) = (args.get(1).and_then(|s| s.parse().ok()).unwrap_or(1920.0), args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1080.0));
+    let Ok(mut gpu) = Gpu::new(render::new_instance(), None) else { return 1 };
+    let mut params = Params { res: [width, height], canvas: [width, height], since: 60.0, logo_on: 1.0, scale: 1.0, ..Default::default() };
+    let _ = gpu.render_offscreen(w, params, None);
+    let n = 30;
+    let t0 = std::time::Instant::now();
+    for i in 0..n {
+        params.time = i as f32 * 0.033;
+        let _ = gpu.render_offscreen(w, params, None);
+    }
+    println!("{}: {:.1} ms/fotogramma a {}x{} (compresa la lettura dei pixel)", w.id, t0.elapsed().as_secs_f64() * 1000.0 / n as f64, width, height);
+    0
 }

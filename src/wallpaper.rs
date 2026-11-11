@@ -28,6 +28,8 @@ struct Screen {
     occluded: bool,
     /// Posizione e dimensione dello schermo in punti globali (per trovare lo schermo del Dock).
     global: GRect,
+    /// Angolo dello schermo in pixel fisici del desktop (Windows: coordinate del puntatore).
+    phys: [i32; 2],
 }
 
 /// Dati degli indicatori, aggiornati dall'app ogni 2 secondi (solo macOS).
@@ -47,6 +49,8 @@ pub struct Wallpapers {
     changed: Instant,
     /// Disegno degli indicatori, uno per formato di superficie; creati solo quando servono.
     overlays: HashMap<wgpu::TextureFormat, Overlay>,
+    /// Cruscotto: statistiche e lancette, solo se uno schermo lo mostra.
+    dash: Option<crate::dash::DashRuntime>,
 }
 
 pub fn monitor_key(m: &MonitorHandle) -> String {
@@ -108,7 +112,7 @@ fn create_window(el: &ActiveEventLoop, m: &MonitorHandle) -> Option<Arc<Window>>
 impl Wallpapers {
     pub fn new() -> Self {
         let now = Instant::now();
-        Self { screens: HashMap::new(), monitors: Vec::new(), monitor_sig: String::new(), start: now, changed: now, overlays: HashMap::new() }
+        Self { screens: HashMap::new(), monitors: Vec::new(), monitor_sig: String::new(), start: now, changed: now, overlays: HashMap::new(), dash: None }
     }
 
     pub fn owns(&self, id: WindowId) -> bool {
@@ -138,6 +142,7 @@ impl Wallpapers {
             })
             .collect();
         if mons.is_empty() || !cfg.wallpaper_enabled {
+            self.dash = None;
             if gpu.is_none() {
                 match Gpu::new(render::new_instance(), None) {
                     Ok(g) => *gpu = Some(g),
@@ -161,7 +166,7 @@ impl Wallpapers {
         }
 
         let instance = gpu.as_ref().map(|g| g.instance.clone()).unwrap_or_else(render::new_instance);
-        let mut created: Vec<(Arc<Window>, wgpu::Surface<'static>, String, [f32; 2], [f32; 2], winit::dpi::PhysicalSize<u32>, GRect)> = Vec::new();
+        let mut created: Vec<(Arc<Window>, wgpu::Surface<'static>, String, [f32; 2], [f32; 2], winit::dpi::PhysicalSize<u32>, GRect, [i32; 2])> = Vec::new();
         for m in &mons {
             let (pos, size) = (m.position(), m.size());
             let Some(window) = create_window(el, m) else { continue };
@@ -188,7 +193,7 @@ impl Wallpapers {
             let sf = m.scale_factor();
             let (lp, ls) = (pos.to_logical::<f64>(sf), size.to_logical::<f64>(sf));
             let global = GRect { x: lp.x, y: lp.y, w: ls.width, h: ls.height };
-            created.push((window, surface, wallpaper, offset, canvas, size, global));
+            created.push((window, surface, wallpaper, offset, canvas, size, global, [pos.x, pos.y]));
         }
 
         if gpu.is_none() {
@@ -202,8 +207,13 @@ impl Wallpapers {
         }
         let g = gpu.as_mut().unwrap();
         let in_use: Vec<String> = created.iter().map(|c| c.2.clone()).collect();
+        if in_use.iter().any(|w| w == crate::dash::ID) {
+            self.dash.get_or_insert_with(crate::dash::DashRuntime::new);
+        } else {
+            self.dash = None;
+        }
         g.retain_pipelines(&in_use);
-        for (window, surface, wallpaper, offset, canvas, size, global) in created {
+        for (window, surface, wallpaper, offset, canvas, size, global, phys) in created {
             let id = window.id();
             let scale = crate::indicators::indicator_scale(
                 cfg.quality.scale(size.height),
@@ -211,17 +221,46 @@ impl Wallpapers {
                 cfg!(target_os = "macos") && cfg.indicators.enabled,
             );
             let target = g.make_target(window, surface, scale);
-            self.screens.insert(id, Screen { target, size, wallpaper, offset, canvas, occluded: false, global });
+            self.screens.insert(id, Screen { target, size, wallpaper, offset, canvas, occluded: false, global, phys });
         }
         self.changed = Instant::now();
         log(format!("Sfondi: {} schermi, modalità {:?}", self.screens.len(), cfg.mode));
     }
 
-    pub fn clear(&mut self) {
-        self.screens.clear();
+    /// Vero se almeno uno schermo mostra il cruscotto.
+    pub fn dash_active(&self) -> bool {
+        self.dash.is_some() && self.screens.values().any(|s| s.wallpaper == crate::dash::ID)
     }
 
-    pub fn render(&mut self, gpu: &mut Gpu, cfg: &Config, catalog: &[Wallpaper], ind: Option<&IndicatorState>) {
+    /// Tasto del cruscotto sotto il puntatore. Le coordinate sono quelle di `platform::pointer`:
+    /// pixel fisici su Windows, punti globali su macOS.
+    pub fn dash_hit(&self, x: f64, y: f64) -> Option<crate::dash::DashButton> {
+        self.screens.values().filter(|s| s.wallpaper == crate::dash::ID).find_map(|s| {
+            let (lx, ly) = if cfg!(target_os = "macos") {
+                let k = s.target.window.scale_factor();
+                ((x - s.global.x) * k, (y - s.global.y) * k)
+            } else {
+                (x - s.phys[0] as f64, y - s.phys[1] as f64)
+            };
+            if lx < 0.0 || ly < 0.0 || lx >= s.size.width as f64 || ly >= s.size.height as f64 {
+                return None;
+            }
+            crate::dash::hit(s.canvas, [lx as f32 + s.offset[0], ly as f32 + s.offset[1]])
+        })
+    }
+
+    pub fn dash_press(&mut self, b: crate::dash::DashButton) {
+        if let Some(d) = self.dash.as_mut() {
+            d.press(b);
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.screens.clear();
+        self.dash = None;
+    }
+
+    pub fn render(&mut self, gpu: &mut Gpu, cfg: &Config, catalog: &[Wallpaper], ind: Option<&IndicatorState>, office: crate::dash::DashOffice) {
         if self.screens.is_empty() {
             return;
         }
@@ -237,6 +276,8 @@ impl Wallpapers {
             None => near(g.x, 0.0) && near(g.y, 0.0),
         };
         let opacity = { let t = ((since - 1.3) / (2.6 - 1.3)).clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) };
+        let dash_stats = self.dash.as_mut().map(|d| d.step(since));
+        let road = self.dash.as_ref().map(|d| d.road).unwrap_or(0.0);
         for screen in self.screens.values_mut() {
             if screen.occluded {
                 continue;
@@ -251,8 +292,27 @@ impl Wallpapers {
                 logo_on: logo,
                 scale: screen.target.scale,
                 _pad: [0.0; 2],
+                dash: [road, 0.0, 0.0, 0.0],
             };
             let w = catalog.iter().find(|w| w.id == screen.wallpaper).unwrap_or(&catalog[0]);
+            if w.id == crate::dash::ID {
+                if let (Some(rt), Some(stats)) = (self.dash.as_mut(), dash_stats) {
+                    let frame = crate::dash::DashFrame {
+                        size_px: [screen.target.config.width, screen.target.config.height],
+                        scale: screen.target.scale,
+                        offset: screen.offset,
+                        canvas: screen.canvas,
+                        stats,
+                        office,
+                        since,
+                        pressed: rt.pressed(),
+                    };
+                    let format = screen.target.format;
+                    let mut extra = |g: &Gpu, enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| rt.draw(g, enc, view, format, &frame);
+                    gpu.draw(&mut screen.target, w, params, Some(&mut extra));
+                    continue;
+                }
+            }
             match ind.filter(|_| dock_screen(&screen.global)) {
                 Some(state) => {
                     let format = screen.target.format;

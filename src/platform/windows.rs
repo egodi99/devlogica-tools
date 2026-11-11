@@ -379,3 +379,83 @@ pub fn show_balloon(title: &str, body: &str) {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Aspetto delle finestre: barra del titolo scura e angoli arrotondati (Windows 11).
+// Su Windows 10 le chiamate non hanno effetto e vengono ignorate.
+// ---------------------------------------------------------------------------
+
+use windows::Win32::Graphics::Dwm::{
+    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+};
+
+fn dwm_set<T>(hwnd: HWND, attr: windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE, value: &T) {
+    unsafe {
+        let _ = DwmSetWindowAttribute(hwnd, attr, value as *const T as *const core::ffi::c_void, std::mem::size_of::<T>() as u32);
+    }
+}
+
+fn colorref(c: egui::Color32) -> u32 {
+    c.r() as u32 | (c.g() as u32) << 8 | (c.b() as u32) << 16
+}
+
+/// Finestra normale (Impostazioni, Le mie call): barra del titolo scura, dello stesso colore del fondo.
+pub fn style_window(window: &Window) {
+    let Some(hwnd) = hwnd_of(window) else { return };
+    dwm_set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &1u32);
+    dwm_set(hwnd, DWMWA_CAPTION_COLOR, &colorref(crate::theme::BG_SIDE));
+}
+
+/// Finestra senza bordi (avvisi, menu dell'icona): angoli arrotondati, ombra e bordo sottile.
+pub fn style_popup(window: &Window, border: egui::Color32) {
+    let Some(hwnd) = hwnd_of(window) else { return };
+    dwm_set(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &DWMWCP_ROUND);
+    dwm_set(hwnd, DWMWA_BORDER_COLOR, &colorref(border));
+}
+
+/// Area di lavoro (schermo meno barra delle applicazioni) che contiene il punto, in pixel fisici.
+pub fn work_area(x: i32, y: i32) -> Option<(i32, i32, i32, i32)> {
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+    unsafe {
+        let m = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if !GetMonitorInfoW(m, &mut info).as_bool() {
+            return None;
+        }
+        let r = info.rcWork;
+        Some((r.left, r.top, r.right, r.bottom))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Clic sul cruscotto: lo sfondo sta sotto alle icone e non riceve il mouse, quindi l'app
+// guarda la posizione e il tasto sinistro e controlla che sotto ci sia il desktop.
+// ---------------------------------------------------------------------------
+
+/// Posizione del puntatore (pixel fisici) e tasto principale premuto.
+pub fn pointer() -> Option<(f64, f64, bool)> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
+    unsafe {
+        let mut p = POINT::default();
+        GetCursorPos(&mut p).ok()?;
+        // con i tasti invertiti il tasto principale fisico è il destro
+        let key = if GetSystemMetrics(SM_SWAPBUTTON) != 0 { VK_RBUTTON } else { VK_LBUTTON };
+        let down = (GetAsyncKeyState(key.0 as i32) as u16 & 0x8000) != 0;
+        Some((p.x as f64, p.y as f64, down))
+    }
+}
+
+/// Vero se nel punto c'è il desktop (icone o sfondo) e non una finestra.
+pub fn desktop_at(x: f64, y: f64) -> bool {
+    unsafe {
+        let h = WindowFromPoint(POINT { x: x as i32, y: y as i32 });
+        if h.is_invalid() {
+            return false;
+        }
+        let root = GetAncestor(h, GA_ROOT);
+        let mut buf = [0u16; 64];
+        let n = GetClassNameW(root, &mut buf);
+        let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+        class == "Progman" || class == "WorkerW"
+    }
+}

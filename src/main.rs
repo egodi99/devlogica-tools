@@ -16,6 +16,10 @@ mod office;
 mod overlay;
 mod platform;
 mod render;
+mod settingsui;
+mod dash;
+mod theme;
+mod traymenu;
 mod snapshot;
 mod statsui;
 mod sound;
@@ -35,6 +39,18 @@ fn main() {
     }
     if args.get(1).map(|a| a == "--notifica-prova").unwrap_or(false) {
         std::process::exit(notify::run_test());
+    }
+    if args.get(1).map(|a| a == "--bench").unwrap_or(false) {
+        std::process::exit(snapshot::bench(&args[2..]));
+    }
+    if args.get(1).map(|a| a == "--statistiche").unwrap_or(false) {
+        // letture del cruscotto per qualche secondo, per verificare i contatori su questo PC
+        let s = dash::DashSampler::start();
+        for _ in 0..6 {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            println!("{:?}", s.latest());
+        }
+        return;
     }
     if args.get(1).map(|a| a == "--ui").unwrap_or(false) {
         std::process::exit(snapshot::run_ui(&args[2..]));
@@ -74,6 +90,17 @@ fn main() {
     tray_icon::menu::MenuEvent::set_event_handler(Some(move |e: tray_icon::menu::MenuEvent| {
         let _ = menu_proxy.send_event(app::UserEvent::Menu(e.id));
     }));
+
+    // Windows: il clic sull'icona apre il menu a comparsa (traymenu) invece del menu nativo.
+    #[cfg(windows)]
+    {
+        let tray_proxy = proxy.clone();
+        tray_icon::TrayIconEvent::set_event_handler(Some(move |e: tray_icon::TrayIconEvent| {
+            if let tray_icon::TrayIconEvent::Click { position, button_state: tray_icon::MouseButtonState::Up, .. } = e {
+                let _ = tray_proxy.send_event(app::UserEvent::TrayClick { x: position.x, y: position.y });
+            }
+        }));
+    }
 
     let mut app = app::App::new(proxy);
     if let Err(e) = event_loop.run_app(&mut app) {

@@ -1,6 +1,6 @@
 [package]
 name = "devlogica-tools"
-version = "1.0.4"
+version = "1.0.6"
 # egui 0.36 richiede Rust 1.95 o successivo
 rust-version = "1.95"
 edition = "2021"
@@ -33,9 +33,15 @@ windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",
   "Win32_UI_Shell",
+  "Win32_UI_Input_KeyboardAndMouse",
   "Win32_Graphics_Gdi",
+  "Win32_Graphics_Dwm",
   "Win32_Media_Audio",
   "Win32_System_Threading",
+  "Win32_System_Performance",
+  "Win32_System_SystemInformation",
+  "Win32_System_Power",
+  "Win32_Storage_FileSystem",
 ] }
 winreg = "0.55"
 

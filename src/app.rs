@@ -38,6 +38,19 @@ pub enum UserEvent {
     /// Versione nuova installata: l'app in uso deve chiudersi.
     InstallDone,
     NotificationClicked,
+    /// Clic sull'icona nella barra di sistema (Windows: apre il menu a comparsa).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    TrayClick { x: f64, y: f64 },
+}
+
+/// Dove sta il menu a comparsa: angolo in pixel fisici, scala, e se cresce verso l'alto.
+#[derive(Clone, Copy)]
+struct PopupPlace {
+    x: i32,
+    /// Bordo fisso: quello inferiore se `up`, altrimenti quello superiore.
+    edge: i32,
+    up: bool,
+    scale: f64,
 }
 
 pub struct App {
@@ -58,6 +71,15 @@ pub struct App {
     call_win: Option<UiWin>,
     coffee_win: Option<UiWin>,
     ask_win: Option<UiWin>,
+    /// Menu a comparsa dell'icona (Windows) e sua posizione.
+    popup: Option<UiWin>,
+    popup_place: Option<PopupPlace>,
+    popup_closed: Instant,
+    popup_focused: bool,
+    tray_page: ui::TrayPage,
+    settings_page: ui::Page,
+    /// Miniature degli sfondi per la galleria delle Impostazioni.
+    thumbs: Vec<(String, std::sync::Arc<egui::ColorImage>)>,
     /// Finestra "Le mie call" e periodo mostrato.
     stats_win: Option<UiWin>,
     stats_period: Period,
@@ -81,6 +103,9 @@ pub struct App {
     store: CallStore,
     next_edge: Instant,
     fullscreen: bool,
+    /// Clic sul cruscotto: tasto sinistro premuto al giro precedente e tasto colpito alla pressione.
+    dash_down: bool,
+    dash_press: Option<(crate::dash::DashButton, f64, f64)>,
     // indicatori sullo sfondo (solo macOS)
     sampler: Option<crate::sysstats::Sampler>,
     ind_state: Option<IndicatorState>,
@@ -109,6 +134,13 @@ impl App {
             call_win: None,
             coffee_win: None,
             ask_win: None,
+            popup: None,
+            popup_place: None,
+            popup_closed: now,
+            popup_focused: false,
+            tray_page: ui::TrayPage::Main,
+            settings_page: ui::Page::Home,
+            thumbs: Vec::new(),
             stats_win: None,
             stats_period: Period::containing(PeriodKind::Week, chrono::Local::now().date_naive()),
             delete: ui::DeleteForm::new(chrono::Local::now().date_naive()),
@@ -126,6 +158,8 @@ impl App {
             store: CallStore::load(app_dir().join("call.json")),
             next_edge: now,
             fullscreen: false,
+            dash_down: false,
+            dash_press: None,
             sampler: None,
             ind_state: None,
             ax_prompted: false,
@@ -365,6 +399,7 @@ impl App {
             Action::OpenFolder => platform::open_folder(&crate::config::custom_wallpapers_dir()),
             Action::Reload => {
                 self.catalog = catalog::catalog();
+                self.thumbs.clear();
                 if let Some(g) = self.gpu.as_mut() {
                     g.clear_pipelines();
                 }
@@ -437,6 +472,19 @@ impl App {
                     }
                 }
                 UiAction::OpenAccessibility => platform::open_accessibility_settings(),
+                UiAction::Menu(Action::Quit) => {
+                    self.handle_action(el, Action::Quit);
+                    return;
+                }
+                UiAction::Menu(a) => self.handle_action(el, a),
+                UiAction::TestSound => sound::play(Chime::Call, self.cfg.volume),
+                UiAction::ClosePopup => self.close_popup(),
+                UiAction::OpenAppDir => platform::open_folder(&app_dir()),
+                UiAction::OpenSettings(page) => {
+                    self.settings_page = page;
+                    self.open_settings(el);
+                    self.repaint_settings();
+                }
                 UiAction::OpenUpdate => self.open_release_page(),
                 UiAction::CheckUpdates => self.check_updates(true),
                 UiAction::InstallUpdate => self.start_install(),
@@ -477,6 +525,7 @@ impl App {
         self.call_win = None;
         self.coffee_win = None;
         self.ask_win = None;
+        self.popup = None;
         self.settings = None;
         self.delete = ui::DeleteForm::new(chrono::Local::now().date_naive());
         self.stats_win = None;
@@ -494,10 +543,15 @@ impl App {
             s.focus();
             return;
         }
+        self.make_thumbs();
         let (Some(gpu), Some(m)) = (self.gpu.as_ref(), Self::primary(el)) else { return };
         let (w, h) = ui::logical_size(&m);
-        let (ww, wh) = (500.0, 680.0f64.min(h - 80.0));
-        let attrs = ui::attrs_on(&m, (w - ww) / 2.0, (h - wh) / 2.0, ww, wh).with_title("DevLogica Tools – Impostazioni").with_resizable(false);
+        let (ww, wh) = (980.0f64.min(w - 40.0), 700.0f64.min(h - 80.0));
+        let attrs = ui::attrs_on(&m, (w - ww) / 2.0, (h - wh) / 2.0, ww, wh)
+            .with_title("DevLogica Tools – Impostazioni")
+            .with_resizable(true)
+            .with_min_inner_size(winit::dpi::LogicalSize::new(820.0, 520.0))
+            .with_window_icon(crate::theme::window_icon());
         self.settings = UiWin::new(el, gpu, attrs, false);
         match &mut self.settings {
             // disegna subito il primo fotogramma: è lì che la finestra diventa visibile
@@ -521,13 +575,216 @@ impl App {
         let (Some(gpu), Some(m)) = (self.gpu.as_ref(), Self::primary(el)) else { return };
         let (w, h) = ui::logical_size(&m);
         let (ww, wh) = (560.0, 640.0f64.min(h - 80.0));
-        let attrs = ui::attrs_on(&m, (w - ww) / 2.0, (h - wh) / 2.0, ww, wh).with_title("DevLogica Tools – Le mie call").with_resizable(false);
+        let attrs = ui::attrs_on(&m, (w - ww) / 2.0, (h - wh) / 2.0, ww, wh)
+            .with_title("DevLogica Tools – Le mie call")
+            .with_resizable(false)
+            .with_window_icon(crate::theme::window_icon());
         self.stats_period = Period::containing(PeriodKind::Week, chrono::Local::now().date_naive());
         self.stats_win = UiWin::new(el, gpu, attrs, false);
         match &mut self.stats_win {
             // disegna subito il primo fotogramma: è lì che la finestra diventa visibile
             Some(s) => s.next_paint = Instant::now(),
             None => log("Impossibile aprire la finestra delle mie call"),
+        }
+    }
+
+    /// Miniature degli sfondi per la galleria (una volta sola, poi restano in memoria).
+    fn make_thumbs(&mut self) {
+        if !self.thumbs.is_empty() {
+            return;
+        }
+        let Some(gpu) = self.gpu.as_mut() else { return };
+        let (w, h) = (384u32, 216u32);
+        for wp in &self.catalog {
+            let params = crate::render::Params {
+                res: [w as f32, h as f32],
+                offset: [0.0, 0.0],
+                canvas: [w as f32, h as f32],
+                time: 24.0,
+                since: 60.0,
+                logo_on: if self.cfg.show_logo { 1.0 } else { 0.0 },
+                scale: 1.0,
+                ..Default::default()
+            };
+            let px = crate::dash::thumbnail(gpu, wp, params);
+            if let Some(px) = px {
+                let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px);
+                self.thumbs.push((wp.id.clone(), std::sync::Arc::new(img)));
+            }
+        }
+    }
+
+    /// Altezza del menu a comparsa per lo stato attuale.
+    fn popup_height(&mut self) -> f64 {
+        let mut delete = ui::DeleteForm::new(chrono::Local::now().date_naive());
+        let mut page = ui::Page::Home;
+        let upd = self.upd.clone();
+        let v = View {
+            cfg: &mut self.cfg,
+            office: &self.office,
+            me: String::new(),
+            mic: &[],
+            ask: None,
+            update: &upd,
+            peers: Vec::new(),
+            ax_trusted: false,
+            delete: &mut delete,
+            first_call_day: None,
+            page: &mut page,
+            tray_page: &mut self.tray_page,
+            week: None,
+            today_ms: 0.0,
+            autostart: false,
+            catalog: &self.catalog,
+            monitors: &[],
+            thumbs: &[],
+            actions: Vec::new(),
+        };
+        crate::traymenu::height(&v)
+    }
+
+    fn close_popup(&mut self) {
+        if self.popup.take().is_some() {
+            self.popup_closed = Instant::now();
+        }
+        self.popup_focused = false;
+    }
+
+    /// Clic sull'icona: apre il menu a comparsa vicino all'icona, o lo chiude se è aperto.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn toggle_popup(&mut self, el: &ActiveEventLoop, x: f64, y: f64) {
+        if self.popup.is_some() {
+            self.close_popup();
+            return;
+        }
+        // lo stesso clic che ha tolto il fuoco al menu (chiudendolo) non deve riaprirlo
+        if self.popup_closed.elapsed() < Duration::from_millis(300) {
+            return;
+        }
+        self.tray_page = ui::TrayPage::Main;
+        let h = self.popup_height();
+        let Some(gpu) = self.gpu.as_ref() else { return };
+        let mon = el
+            .available_monitors()
+            .find(|m| {
+                let (p, s) = (m.position(), m.size());
+                x >= p.x as f64 && y >= p.y as f64 && x < (p.x + s.width as i32) as f64 && y < (p.y + s.height as i32) as f64
+            })
+            .or_else(|| Self::primary(el));
+        let Some(m) = mon else { return };
+        let scale = m.scale_factor();
+        let (mp, ms) = (m.position(), m.size());
+        let work = platform::work_area(x as i32, y as i32).unwrap_or((mp.x, mp.y, mp.x + ms.width as i32, mp.y + ms.height as i32));
+        let (pw, ph) = ((crate::traymenu::WIDTH * scale) as i32, (h * scale) as i32);
+        let margin = (10.0 * scale) as i32;
+        let px = ((x as i32) - pw / 2).clamp(work.0 + margin, work.2 - pw - margin);
+        let up = y as i32 >= (work.1 + work.3) / 2;
+        let edge = if up { work.3 - margin } else { work.1 + margin };
+        let py = if up { edge - ph } else { edge };
+        let attrs = winit::window::Window::default_attributes()
+            .with_title("DevLogica Tools")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+            .with_position(winit::dpi::PhysicalPosition::new(px, py))
+            .with_inner_size(winit::dpi::PhysicalSize::new(pw as u32, ph as u32));
+        #[cfg(windows)]
+        let attrs = {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attrs.with_skip_taskbar(true)
+        };
+        self.popup = UiWin::new(el, gpu, attrs, false);
+        if let Some(p) = self.popup.as_mut() {
+            platform::style_popup(&p.window, crate::theme::BORDER);
+            p.next_paint = Instant::now();
+        }
+        self.popup_place = Some(PopupPlace { x: px, edge, up, scale });
+        self.popup_focused = false;
+    }
+
+    /// Dopo un cambio di pagina il menu cambia altezza: resta attaccato allo stesso bordo.
+    fn fit_popup(&mut self) {
+        let (Some(_), Some(place)) = (self.popup.as_ref(), self.popup_place) else { return };
+        let h = self.popup_height();
+        let Some(p) = self.popup.as_ref() else { return };
+        let ph = (h * place.scale) as i32;
+        let cur = p.window.inner_size();
+        if (cur.height as i32 - ph).abs() > 1 {
+            let y = if place.up { place.edge - ph } else { place.edge };
+            let _ = p.window.request_inner_size(winit::dpi::PhysicalSize::new(cur.width, ph as u32));
+            p.window.set_outer_position(winit::dpi::PhysicalPosition::new(place.x, y));
+        }
+    }
+
+    /// Clic sui tasti del cruscotto. Lo sfondo sta sotto alle icone e non riceve il mouse:
+    /// si guarda il tasto sinistro a ogni giro e vale solo se sotto c'è il desktop.
+    fn poll_dash_click(&mut self, el: &ActiveEventLoop) {
+        let Some((x, y, down)) = platform::pointer() else { return };
+        if down && !self.dash_down {
+            self.dash_press = self.wall.dash_hit(x, y).filter(|_| platform::desktop_at(x, y)).map(|b| (b, x, y));
+        } else if !down && self.dash_down {
+            if let Some((b, px, py)) = self.dash_press.take() {
+                // un clic, non un trascinamento (es. selezione delle icone)
+                if (x - px).abs() < 8.0 && (y - py).abs() < 8.0 && self.wall.dash_hit(x, y) == Some(b) {
+                    self.wall.dash_press(b);
+                    self.dash_action(el, b);
+                }
+            }
+        }
+        self.dash_down = down;
+    }
+
+    fn dash_action(&mut self, el: &ActiveEventLoop, b: crate::dash::DashButton) {
+        use crate::dash::DashButton::*;
+        use platform::SysTool;
+        log(format!("Cruscotto: {b:?}"));
+        let me = self.me();
+        let tool = |t: SysTool| platform::open_tool(t);
+        match b {
+            Rocker(0) | Gauge(4) => tool(SysTool::Wsl),
+            Rocker(1) | Gauge(5) | Lcd => tool(SysTool::Docker),
+            Rocker(2) | Gauge(1) => tool(SysTool::Network),
+            Rocker(3) => tool(SysTool::Power),
+            Rocker(4) => {
+                let a = if self.office.my_call.is_some() { Action::EndCall } else { Action::StartCall };
+                self.handle_action(el, a);
+            }
+            Rocker(5) => {
+                let a = match &self.office.coffee {
+                    None => Action::Coffee(None),
+                    Some(c) if c.mine && c.by == me => Action::EndCoffee,
+                    Some(_) => Action::ShowCoffee,
+                };
+                self.handle_action(el, a);
+            }
+            Rocker(6) => {
+                self.cfg.detection = if self.cfg.detection == Detection::Auto { Detection::Off } else { Detection::Auto };
+                self.cfg.save();
+                self.refresh(el);
+            }
+            Rocker(7) => self.handle_action(el, Action::ToggleLogo),
+            Rocker(8) => self.handle_action(el, Action::CheckUpdates),
+            Rocker(9) => {
+                self.settings_page = ui::Page::Home;
+                self.open_settings(el);
+            }
+            Rocker(10) => self.handle_action(el, Action::ShowCalls),
+            Rocker(11) => tool(SysTool::Lock),
+            LeftRocker(0) => self.handle_action(el, Action::TogglePause),
+            LeftRocker(1) => {
+                // sfondo successivo del catalogo
+                let i = self.catalog.iter().position(|w| w.id == self.cfg.wallpaper).unwrap_or(0);
+                let next = self.catalog[(i + 1) % self.catalog.len()].id.clone();
+                self.handle_action(el, Action::SetWallpaper(next));
+            }
+            LeftRocker(_) => {
+                self.settings_page = ui::Page::Wallpaper;
+                self.open_settings(el);
+                self.repaint_settings();
+            }
+            Gauge(8) => tool(SysTool::Clock),
+            Gauge(_) => tool(SysTool::TaskManager),
+            Rocker(_) => {}
         }
     }
 
@@ -557,7 +814,7 @@ impl App {
             }
             // pausa caffè: al centro
             let rows = self.office.coffee.as_ref().map(|c| c.rsvp.len().max(1)).unwrap_or(1);
-            let coffee_h = ui::coffee_panel_height(rows);
+            let coffee_h = ui::coffee_panel_height(rows, self.office.coffee.as_ref().is_some_and(|c| c.mine));
             if want_coffee && self.coffee_win.is_none() {
                 let w = 420.0;
                 let attrs = ui::overlay_attrs(ui::attrs_on(m, (sw - w) / 2.0, (sh - coffee_h) / 2.0, w, coffee_h), "DevLogica Tools – pausa caffè");
@@ -568,7 +825,7 @@ impl App {
             }
             // richiesta di conferma: in basso a destra
             if want_ask && self.ask_win.is_none() {
-                let (w, h) = (380.0, 140.0);
+                let (w, h) = (400.0, 132.0);
                 let attrs = ui::overlay_attrs(ui::attrs_on(m, sw - w - 24.0, sh - h - 90.0, w, h), "DevLogica Tools – sei in call?");
                 self.ask_win = UiWin::new(el, gpu, attrs, true);
             }
@@ -597,12 +854,25 @@ impl App {
         let now = Instant::now();
         let old_name = self.me();
         let old_record = self.cfg.record_calls;
+        let old_tray_page = self.tray_page;
         let mut actions = Vec::new();
         let peers: Vec<String> = self.office.peers.keys().cloned().collect();
         let me = self.me();
         let upd = self.upd.clone();
         let ask = self.ask.clone();
         let first_call_day = self.store.first_day(&chrono::Local);
+        let today = chrono::Local::now().date_naive();
+        // panoramica: settimana in corso e oggi (solo con le Impostazioni aperte)
+        let settings_due = self.settings.as_ref().is_some_and(|w| force || now >= w.next_paint);
+        let (week, today_ms) = if settings_due {
+            let segs = self.store.snapshot(now_ms());
+            let week = callstats::report(&segs, Period::containing(PeriodKind::Week, today), today, &chrono::Local);
+            let day = callstats::report(&segs, Period::containing(PeriodKind::Day, today), today, &chrono::Local);
+            (Some(week), day.total_ms)
+        } else {
+            (None, 0.0)
+        };
+        let autostart = settings_due && platform::autostart_enabled();
         let mut view = View {
             cfg: &mut self.cfg,
             office: &self.office,
@@ -614,21 +884,29 @@ impl App {
             ax_trusted: self.ax_trusted,
             delete: &mut self.delete,
             first_call_day,
+            page: &mut self.settings_page,
+            tray_page: &mut self.tray_page,
+            week: week.as_ref(),
+            today_ms,
+            autostart,
+            catalog: &self.catalog,
+            monitors: &self.wall.monitors,
+            thumbs: &self.thumbs,
             actions: Vec::new(),
         };
-        let today = chrono::Local::now().date_naive();
         let period = self.stats_period;
         let mut stats_action = None;
-        for (win, kind) in [(&mut self.call_win, 0), (&mut self.coffee_win, 1), (&mut self.ask_win, 2), (&mut self.settings, 3), (&mut self.stats_win, 4)] {
+        for (win, kind) in [(&mut self.call_win, 0), (&mut self.coffee_win, 1), (&mut self.ask_win, 2), (&mut self.settings, 3), (&mut self.stats_win, 4), (&mut self.popup, 5)] {
             let Some(w) = win.as_mut() else { continue };
             if !force && now < w.next_paint {
                 continue;
             }
             match kind {
-                0 => w.paint(gpu, ui::RED_BG, |u| ui::call_panel(u, &mut view)),
-                1 => w.paint(gpu, ui::COFFEE_BG, |u| ui::coffee_panel(u, &mut view)),
-                2 => w.paint(gpu, ui::INK, |u| ui::ask_panel(u, &mut view)),
-                3 => w.paint(gpu, ui::INK, |u| ui::settings(u, &mut view)),
+                0 => w.paint(gpu, ui::PANEL_BG, |u| ui::call_panel(u, &mut view)),
+                1 => w.paint(gpu, ui::PANEL_BG, |u| ui::coffee_panel(u, &mut view)),
+                2 => w.paint(gpu, ui::PANEL_BG, |u| ui::ask_panel(u, &mut view)),
+                3 => w.paint(gpu, ui::INK, |u| crate::settingsui::settings(u, &mut view)),
+                5 => w.paint(gpu, ui::PANEL_BG, |u| crate::traymenu::popup(u, &mut view)),
                 _ => {
                     // il report si ricalcola a ogni disegno: la call in corso cresce da sola
                     let rep = callstats::report(&self.store.snapshot(now_ms()), period, today, &chrono::Local);
@@ -642,6 +920,12 @@ impl App {
             }
         }
         actions.append(&mut view.actions);
+        if self.tray_page != old_tray_page {
+            self.fit_popup();
+            if let Some(p) = self.popup.as_mut() {
+                p.next_paint = Instant::now();
+            }
+        }
         if let Some(a) = stats_action {
             self.stats_period = match a {
                 StatsAction::Kind(k) => Period::containing(k, today),
@@ -655,6 +939,11 @@ impl App {
         }
         if !actions.is_empty() {
             self.handle_ui(el, actions, &old_name, old_record);
+            // lo stato è cambiato: le finestre aperte si ridisegnano subito
+            for w in [&mut self.settings, &mut self.popup].into_iter().flatten() {
+                w.next_paint = Instant::now();
+            }
+            self.fit_popup();
         }
     }
 
@@ -706,14 +995,20 @@ impl App {
             1 => "DevLogica Tools – 1 call in corso".to_string(),
             n => format!("DevLogica Tools – {n} call in corso"),
         };
+        // Su Windows il menu è la finestra a comparsa (vedi traymenu): niente menu nativo.
+        let native_menu = !cfg!(windows);
         match &self.tray {
             Some(t) => {
-                t.set_menu(Some(Box::new(built.menu)));
+                if native_menu {
+                    t.set_menu(Some(Box::new(built.menu)));
+                }
                 let _ = t.set_tooltip(Some(tooltip));
             }
-            None => match TrayIconBuilder::new()
-                .with_menu(Box::new(built.menu))
-                .with_menu_on_left_click(true)
+            None => match {
+                let b = TrayIconBuilder::new().with_menu_on_left_click(native_menu);
+                let b = if native_menu { b.with_menu(Box::new(built.menu)) } else { b };
+                b
+            }
                 .with_icon(tray::icon(badge))
                 .with_tooltip(tooltip)
                 .build()
@@ -823,6 +1118,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Packet(p, from) => self.on_packet(el, p, from),
             UserEvent::CheckDone { manual, result } => self.on_check_done(manual, result),
             UserEvent::NotificationClicked => self.start_install(),
+            UserEvent::TrayClick { x, y } => self.toggle_popup(el, x, y),
             UserEvent::InstallPhase(Phase::Installing) => {
                 if let UpdateState::Downloading(r) = &self.upd {
                     self.upd = UpdateState::Installing(r.clone());
@@ -843,8 +1139,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         self.refresh_tray();
-        if let Some(s) = self.settings.as_mut() {
-            s.next_paint = Instant::now();
+        for w in [&mut self.settings, &mut self.popup].into_iter().flatten() {
+            w.next_paint = Instant::now();
         }
     }
 
@@ -864,7 +1160,22 @@ impl ApplicationHandler<UserEvent> for App {
             self.stats_win = None;
             return;
         }
-        for w in [&mut self.settings, &mut self.stats_win, &mut self.call_win, &mut self.coffee_win, &mut self.ask_win].into_iter().flatten() {
+        // il menu a comparsa si chiude appena perde il fuoco, come un menu vero
+        if is(&self.popup) {
+            match event {
+                WindowEvent::Focused(true) => self.popup_focused = true,
+                WindowEvent::Focused(false) if self.popup_focused => {
+                    self.close_popup();
+                    return;
+                }
+                WindowEvent::CloseRequested => {
+                    self.close_popup();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        for w in [&mut self.settings, &mut self.stats_win, &mut self.call_win, &mut self.coffee_win, &mut self.ask_win, &mut self.popup].into_iter().flatten() {
             if w.window.id() == id {
                 w.on_event(gpu, &event);
                 if matches!(event, WindowEvent::RedrawRequested) {
@@ -919,11 +1230,22 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
 
+        // tasti del cruscotto
+        let dash_on = self.cfg.wallpaper_enabled && self.wall.dash_active();
+        if dash_on {
+            self.poll_dash_click(el);
+        }
+
         // sfondi
         let wall_on = self.cfg.wallpaper_enabled && !self.cfg.paused && !self.fullscreen;
         if wall_on && now >= self.next_frame {
             if let Some(gpu) = self.gpu.as_mut() {
-                self.wall.render(gpu, &self.cfg, &self.catalog, self.ind_state.as_ref());
+                let office = crate::dash::DashOffice {
+                    call: !self.office.calls.is_empty(),
+                    coffee: self.office.coffee.is_some(),
+                    auto_detect: self.cfg.detection == Detection::Auto,
+                };
+                self.wall.render(gpu, &self.cfg, &self.catalog, self.ind_state.as_ref(), office);
             }
             let step = Duration::from_secs_f64(1.0 / self.cfg.fps() as f64);
             self.next_frame += step;
@@ -953,7 +1275,11 @@ impl ApplicationHandler<UserEvent> for App {
         if !self.edges.is_empty() {
             wake = wake.min(self.next_edge);
         }
-        for w in [&self.settings, &self.stats_win, &self.call_win, &self.coffee_win, &self.ask_win].into_iter().flatten() {
+        // anche con lo sfondo in pausa i tasti del cruscotto devono rispondere
+        if dash_on {
+            wake = wake.min(now + Duration::from_millis(30));
+        }
+        for w in [&self.settings, &self.stats_win, &self.call_win, &self.coffee_win, &self.ask_win, &self.popup].into_iter().flatten() {
             wake = wake.min(w.next_paint);
         }
         el.set_control_flow(ControlFlow::WaitUntil(wake.max(Instant::now() + Duration::from_millis(5))));

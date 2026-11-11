@@ -4,13 +4,17 @@ L'app dell'ufficio DevLogica, per **Windows** e **macOS**:
 
 - **Avvisi di call**: quando un collega entra in call, sugli altri PC compare un avviso. Il riconoscimento è automatico per Teams, Slack, Zoom, Meet e le altre app.
 - **Pausa caffè**: qualcuno la propone, gli altri rispondono *Vengo!* o *Non posso*, e tutti vedono le risposte in tempo reale.
-- **Sfondi animati**: quattro sfondi DevLogica disegnati dalla scheda grafica, con supporto multimonitor.
+- **Sfondi animati**: cinque sfondi disegnati dalla scheda grafica, con supporto multimonitor. Tra questi il **Cruscotto**: la plancia di un camion anni '90 di notte, con gli strumenti che mostrano CPU, RAM, GPU, WSL, Docker, disco e rete in tempo reale.
 
 È leggerissima: un unico eseguibile di pochi MB, senza server e senza account. I PC si parlano direttamente sulla rete dell'ufficio.
 
-| Avviso di call | Pausa caffè |
-|---|---|
-| ![Avviso di call](docs/anteprime/call.png) | ![Pausa caffè](docs/anteprime/caffe.png) |
+![Cruscotto](docs/anteprime/cruscotto.png)
+
+| Avviso di call | Pausa caffè | Menu dell'icona (Windows) |
+|---|---|---|
+| ![Avviso di call](docs/anteprime/call.png) | ![Pausa caffè](docs/anteprime/caffe.png) | ![Menu](docs/anteprime/menu.png) |
+
+![Impostazioni](docs/anteprime/impostazioni.png)
 
 ---
 
@@ -42,6 +46,9 @@ Al primo avvio si apre la finestra **Impostazioni**: inserisci il tuo nome, cio�
 ## Come si usa
 
 L'app vive nell'icona della barra di sistema su Windows (vicino all'orologio) o della barra dei menu su macOS.
+Su Windows un clic sull'icona apre un menu a comparsa con lo stato dell'ufficio (chi è in call e da quanto), le azioni rapide e le sottopagine per la pausa caffè e gli sfondi; si chiude cliccando altrove o con Esc. Su macOS resta il menu nativo.
+
+Le **Impostazioni** sono una dashboard: la *Panoramica* mostra il tuo stato, chi è in call, le tue call della settimana, lo sfondo e il microfono; le altre pagine (Call, Avvisi, Sfondi, Le mie call, Diagnostica, Aggiornamenti) raccolgono le opzioni, comprese quelle degli sfondi che prima erano solo nel menu.
 L'icona cambia in base allo stato:
 - **pallino rosso**: c'è qualcuno in call;
 - **pallino ambra**: c'è una pausa caffè in corso.
@@ -70,6 +77,17 @@ Si trovano nel menu → *Sfondi animati*, con queste opzioni:
 - stesso sfondo su ogni schermo, uno diverso per schermo, oppure uno solo esteso su tutti;
 - fluidità e risoluzione (le versioni ridotte consumano meno);
 - logo, pausa e sfondi personalizzati (vedi più sotto).
+
+### Cruscotto
+Sfondo *Cruscotto* (Impostazioni → Sfondi, o dal menu dell'icona). Gli strumenti si aggiornano ogni secondo e le lancette si muovono con un po' d'inerzia; all'avvio fanno il giro di prova fino a fondo scala.
+- **Contagiri**: CPU (×10 %), con la fascia verde e la zona rossa. Nel display sotto, la percentuale.
+- **Tachimetro**: traffico di rete in Mbit/s; la strada scorre alla stessa velocità. Nel contachilometri, le ore di accensione del PC.
+- **Strumenti piccoli**: RAM, GPU, memoria di WSL, container Docker in esecuzione, attività del disco, spazio usato su C:.
+- **Display verde**: container Docker e GB di WSL (*OFF* se non sono avviati).
+- **Spie**: CPU, RAM, GPU o disco al limite, C: quasi pieno, rete attiva, Docker in esecuzione, batteria scarica, qualcuno in call, pausa caffè.
+- **Orologio** analogico nella console di destra.
+
+Su Windows i dati arrivano dagli stessi contatori di Gestione attività (nessun permesso speciale); Docker si interroga sulla sua named pipe, come fa `docker ps`. Su macOS si vedono CPU, RAM e Docker; GPU, WSL e disco restano a riposo.
 
 ### Indicatori sullo sfondo (solo macOS)
 Ai lati del Dock, dentro lo sfondo animato, l'app mostra **CPU**, **RAM**, **orologio** e **logo DevLogica**.
@@ -194,7 +212,10 @@ Dalla scheda *Actions* si può anche lanciare la pipeline a mano (*Run workflow*
 ### Strumenti utili
 ```bash
 devlogica-tools --snapshot lame 3840 2160 20 lame.png     # immagine statica di uno sfondo
-devlogica-tools --ui call anteprima.png                   # anteprima di una finestra (call, caffe, conferma, impostazioni)
+devlogica-tools --ui call anteprima.png                   # anteprima di una finestra (call, caffe, conferma, menu, impostazioni)
+devlogica-tools --ui impostazioni:sfondi anteprima.png    # una pagina delle impostazioni (call, avvisi, sfondi, mie, diagnostica, info)
+devlogica-tools --statistiche                             # letture del cruscotto su questo PC, per qualche secondo
+devlogica-tools --bench cruscotto 1920 1080               # tempo per fotogramma di uno sfondo
 devlogica-tools --notifica-prova                          # mostra una notifica di prova (su macOS lanciala dall'app .app)
 DEVLOGICA_FAKE_VERSION=1.0.0 devlogica-tools              # finge una versione vecchia per provare l'aggiornamento
 ```
@@ -206,7 +227,11 @@ src/app.rs           coordinatore: rete, call, caffè, finestre, menu, ritmi
 src/office.rs        stato dell'ufficio: call e pausa caffè (con test)
 src/net.rs           protocollo UDP compatibile con Call Alert (con test)
 src/detect.rs        riconoscimento delle call dal microfono (con test)
-src/ui.rs            finestre egui: avviso call, caffè, conferma, impostazioni, bordo rosso
+src/theme.rs         colori, caratteri di sistema (Segoe UI, icone Fluent) e controlli su misura
+src/ui.rs            finestre egui: avviso call, caffè, conferma, bordo rosso
+src/settingsui.rs    Impostazioni: barra laterale, panoramica e pagine
+src/traymenu.rs      menu a comparsa dell'icona (Windows)
+src/dash.rs          sfondo Cruscotto: campionatore, disposizione, lancette, spie (con test)
 src/callstats.rs     statistiche delle mie call: periodi, totali, grafico, formati (con test)
 src/callstore.rs     archivio delle mie call in call.json, salvataggio atomico (con test)
 src/statsui.rs       finestra "Le mie call" (egui)
@@ -220,7 +245,7 @@ src/sound.rs         suoni generati al volo
 src/update.rs        controllo aggiornamenti dalle release di GitHub e stati del menu (con test)
 src/install.rs       scaricamento, verifica e sostituzione dell'app (con test)
 src/notify.rs        notifiche di sistema
-src/platform/        Windows (desktop, microfono, avvio) e macOS (idem)
+src/platform/        Windows (desktop, microfono, avvio, letture del cruscotto) e macOS (idem)
 shaders/             sfondi in WGSL
 esempi/onde.wgsl     esempio di sfondo personalizzato
 ```

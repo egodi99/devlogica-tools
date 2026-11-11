@@ -540,3 +540,89 @@ fn dock_autohide() -> bool {
     on
 }
 
+
+// ---------------------------------------------------------------------------
+// Clic sul cruscotto: lo sfondo ignora il mouse, quindi l'app guarda posizione e tasto
+// (NSEvent, nessun permesso) e, al clic, controlla con CoreGraphics che nel punto non ci
+// sia nessuna finestra (escluse quelle del desktop: icone e sfondi).
+// ---------------------------------------------------------------------------
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct CGRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> *const c_void;
+    fn CGRectMakeWithDictionaryRepresentation(dict: *const c_void, rect: *mut CGRect) -> u8;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
+    fn CFNumberGetValue(num: *const c_void, kind: i32, out: *mut c_void) -> u8;
+}
+
+const CG_ON_SCREEN_ONLY: u32 = 1 << 0;
+const CG_EXCLUDE_DESKTOP: u32 = 1 << 4;
+const CF_NUMBER_SINT32: i32 = 3;
+const CF_NUMBER_FLOAT64: i32 = 6;
+
+/// Posizione del puntatore in punti globali (origine in alto a sinistra) e tasto sinistro premuto.
+pub fn pointer() -> Option<(f64, f64, bool)> {
+    unsafe {
+        let cls = objc2::runtime::AnyClass::get(c"NSEvent")?;
+        let loc: objc2_foundation::NSPoint = msg_send![cls, mouseLocation];
+        let buttons: usize = msg_send![cls, pressedMouseButtons];
+        let main_h = screens().first().map(|(f, _)| f.h)?;
+        Some((loc.x, main_h - loc.y, buttons & 1 != 0))
+    }
+}
+
+/// Vero se nel punto (punti globali) non c'è nessuna finestra sopra al desktop.
+pub fn desktop_at(x: f64, y: f64) -> bool {
+    unsafe {
+        let list = CGWindowListCopyWindowInfo(CG_ON_SCREEN_ONLY | CG_EXCLUDE_DESKTOP, 0);
+        if list.is_null() {
+            return false;
+        }
+        let (k_bounds, k_layer, k_alpha) = (cfstr(c"kCGWindowBounds"), cfstr(c"kCGWindowLayer"), cfstr(c"kCGWindowAlpha"));
+        let mut covered = false;
+        for i in 0..CFArrayGetCount(list) {
+            let w = CFArrayGetValueAtIndex(list, i);
+            let mut layer: i32 = 0;
+            let l = CFDictionaryGetValue(w, k_layer);
+            if !l.is_null() {
+                CFNumberGetValue(l, CF_NUMBER_SINT32, &mut layer as *mut i32 as *mut c_void);
+            }
+            // livelli negativi = finestre del desktop (comprese quelle dei nostri sfondi)
+            if layer < 0 {
+                continue;
+            }
+            let mut alpha: f64 = 1.0;
+            let a = CFDictionaryGetValue(w, k_alpha);
+            if !a.is_null() {
+                CFNumberGetValue(a, CF_NUMBER_FLOAT64, &mut alpha as *mut f64 as *mut c_void);
+            }
+            if alpha <= 0.01 {
+                continue;
+            }
+            let b = CFDictionaryGetValue(w, k_bounds);
+            let mut r = CGRect::default();
+            if !b.is_null() && CGRectMakeWithDictionaryRepresentation(b, &mut r) != 0 && x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h {
+                covered = true;
+                break;
+            }
+        }
+        CFRelease(k_bounds);
+        CFRelease(k_layer);
+        CFRelease(k_alpha);
+        CFRelease(list);
+        !covered
+    }
+}

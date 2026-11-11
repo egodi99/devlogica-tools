@@ -29,6 +29,8 @@ pub struct Params {
     /// Rapporto tra pixel disegnati e pixel della finestra (1 = risoluzione piena).
     pub scale: f32,
     pub _pad: [f32; 2],
+    /// Dati del cruscotto: x = distanza percorsa dalla strada (gli altri sfondi la ignorano).
+    pub dash: [f32; 4],
 }
 
 pub struct Gpu {
