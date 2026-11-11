@@ -36,6 +36,38 @@ pub fn size_ok(path: &Path, expected: u64) -> bool {
     std::fs::metadata(path).map(|m| m.len() == expected).unwrap_or(false)
 }
 
+/// SHA-256 di un file, in esadecimale minuscolo.
+fn sha256_of(path: &Path) -> std::io::Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Il file scaricato deve avere la dimensione e l'hash indicati da GitHub.
+/// Senza hash non si installa: resta solo il download a mano dalla pagina della release.
+pub fn verify_file(path: &Path, size: u64, sha256: Option<&str>) -> Result<(), String> {
+    let expected = sha256.ok_or("la release non indica l'hash del file")?;
+    if !size_ok(path, size) {
+        return Err("il file scaricato è incompleto".into());
+    }
+    let actual = sha256_of(path).map_err(|e| format!("lettura del file scaricato: {e}"))?;
+    if actual != expected {
+        log(format!("Hash diverso: atteso {expected}, trovato {actual}"));
+        return Err("il file scaricato non corrisponde a quello della release".into());
+    }
+    Ok(())
+}
+
 /// Cosa va sostituito: il bundle .app su macOS, l'eseguibile su Windows.
 fn target() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("percorso dell'app sconosciuto: {e}"))?;
@@ -75,12 +107,9 @@ fn remove_all(p: &Path) {
     }
 }
 
-fn download(url: &str, dest: &Path, size: u64) -> Result<(), String> {
-    run(command("curl").args(["-L", "-f", "-s", "-m", "600", "-H", "User-Agent: devlogica-tools", "-o"]).arg(dest).arg(url), "download")?;
-    if !size_ok(dest, size) {
-        return Err("il file scaricato è incompleto".into());
-    }
-    Ok(())
+fn download(asset: &Asset, dest: &Path) -> Result<(), String> {
+    run(command("curl").args(["-L", "-f", "-s", "-m", "600", "-H", "User-Agent: devlogica-tools", "-o"]).arg(dest).arg(&asset.url), "download")?;
+    verify_file(dest, asset.size, asset.sha256.as_deref())
 }
 
 /// Prepara accanto a `target` la versione nuova, completa e verificata, in `new`.
@@ -91,7 +120,7 @@ fn prepare(asset: &Asset, tag: &str, new: &Path, progress: &impl Fn(Phase)) -> R
     std::fs::create_dir_all(&work).map_err(|e| format!("cartella temporanea: {e}"))?;
     let zip = work.join("nuova.zip");
     let result = (|| {
-        download(&asset.url, &zip, asset.size)?;
+        download(asset, &zip)?;
         progress(Phase::Installing);
         let out = work.join("estratta");
         run(command("ditto").args(["-x", "-k"]).arg(&zip).arg(&out), "estrazione")?;
@@ -115,7 +144,7 @@ fn prepare(asset: &Asset, tag: &str, new: &Path, progress: &impl Fn(Phase)) -> R
 
 #[cfg(not(target_os = "macos"))]
 fn prepare(asset: &Asset, _tag: &str, new: &Path, progress: &impl Fn(Phase)) -> Result<(), String> {
-    download(&asset.url, new, asset.size)?;
+    download(asset, new)?;
     progress(Phase::Installing);
     Ok(())
 }
@@ -168,6 +197,10 @@ pub fn swap(target: &Path, new: &Path, relaunch: impl FnOnce(&Path) -> std::io::
 /// Scarica, verifica, sostituisce e avvia la versione nuova. `Ok` = l'app in uso deve chiudersi.
 /// In caso di errore l'app in uso resta esattamente com'era.
 pub fn install(asset: &Asset, tag: &str, progress: impl Fn(Phase)) -> Result<(), String> {
+    if asset.sha256.is_none() {
+        log(format!("Aggiornamento a {tag} rifiutato: la release non indica l'hash del file"));
+        return Err("la release non indica l'hash del file".into());
+    }
     let target = target()?;
     let (old, new) = swap_paths(&target);
     remove_all(&old);
@@ -221,6 +254,22 @@ mod tests {
         let (old, new) = swap_paths(Path::new("C:/t/DT.exe"));
         assert_eq!(old.file_name().unwrap(), "DT.exe.vecchia");
         assert_eq!(new.file_name().unwrap(), "DT.exe.nuova");
+    }
+
+    // SHA-256 di "hello"
+    const HELLO: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+
+    #[test]
+    fn verifica_hash() {
+        let d = dir("hash");
+        let p = d.join("f.bin");
+        std::fs::write(&p, "hello").unwrap();
+        assert_eq!(verify_file(&p, 5, Some(HELLO)), Ok(()));
+        assert!(verify_file(&p, 5, Some(&"0".repeat(64))).is_err()); // file alterato
+        assert!(verify_file(&p, 5, None).is_err()); // release senza hash
+        assert!(verify_file(&p, 6, Some(HELLO)).is_err()); // dimensione sbagliata
+        assert!(verify_file(&d.join("manca"), 5, Some(HELLO)).is_err());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

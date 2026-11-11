@@ -89,6 +89,7 @@ L'app non è firmata con un certificato Apple: **dopo ogni aggiornamento** macOS
 ### Aggiornamenti
 L'app controlla da sola se c'è una versione nuova, all'avvio e due volte al giorno; dal menu **Cerca aggiornamenti** controlla subito.
 Quando c'è una versione nuova compare una notifica di sistema e nel menu la voce **Aggiorna alla vX.Y.Z**: un clic e l'app scarica la versione nuova, si sostituisce e si riavvia.
+Prima di sostituirsi l'app controlla che il file scaricato abbia lo stesso SHA-256 che GitHub ha calcolato quando è stato pubblicato. Se non coincide, o se la release non lo indica, l'app resta com'è.
 - **Windows**: cliccando la notifica parte direttamente l'aggiornamento.
 - **macOS**: la notifica è informativa (l'app non è firmata da Apple, quindi macOS non le consente notifiche cliccabili); si aggiorna dal menu o dalle Impostazioni.
 

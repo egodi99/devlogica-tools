@@ -37,7 +37,7 @@ pub fn run_ui(args: &[String]) -> i32 {
     let upd = crate::update::UpdateState::Available(crate::update::Release {
         tag: "v1.1.0".into(),
         page: String::new(),
-        asset: Some(crate::update::Asset { url: String::new(), size: 0 }),
+        asset: Some(crate::update::Asset { url: String::new(), size: 0, sha256: None }),
     });
     let mut view = ui::View { cfg: &mut cfg, office: &office, me: "Emanuele".into(), mic: &mic, ask: Some("Microsoft Teams"), update: &upd, peers, ax_trusted: false, actions: Vec::new() };
     let ppp = 2.0;
