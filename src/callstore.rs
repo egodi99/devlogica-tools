@@ -16,6 +16,40 @@ pub struct CallStore {
     segments: Vec<Segment>,
     /// Indice del tratto in corso (sempre l'ultimo).
     open: Option<usize>,
+    /// Il file esistente non si può leggere né mettere da parte: non si scrive,
+    /// per non perdere lo storico.
+    sola_lettura: bool,
+}
+
+/// Rinomina il file illeggibile in un nome libero (`.danneggiato`, `.danneggiato.1`, ...).
+/// Restituisce false se non ci riesce.
+fn metti_da_parte(path: &PathBuf) -> bool {
+    for n in 0..1000 {
+        let mut nome = path.as_os_str().to_owned();
+        nome.push(".danneggiato");
+        if n > 0 {
+            nome.push(format!(".{n}"));
+        }
+        let dest = PathBuf::from(nome);
+        if dest.exists() {
+            continue;
+        }
+        return match std::fs::rename(path, &dest) {
+            Ok(()) => {
+                crate::config::log("call.json danneggiato, messo da parte");
+                true
+            }
+            Err(e) => {
+                crate::config::log(format!(
+                    "call.json illeggibile e non spostabile ({:?}): archivio in sola lettura",
+                    e.kind()
+                ));
+                false
+            }
+        };
+    }
+    crate::config::log("call.json illeggibile: nessun nome libero, archivio in sola lettura");
+    false
 }
 
 fn valido(s: &Segment) -> bool {
@@ -27,21 +61,20 @@ impl CallStore {
     /// Non riapre mai un tratto: quello rimasto dal giro precedente finisce al suo `end_ms`.
     pub fn load(path: PathBuf) -> CallStore {
         let mut segments = Vec::new();
-        if let Ok(testo) = std::fs::read_to_string(&path) {
-            match serde_json::from_str::<Vec<Segment>>(&testo) {
+        let mut sola_lettura = false;
+        match std::fs::read_to_string(&path) {
+            Ok(testo) => match serde_json::from_str::<Vec<Segment>>(&testo) {
                 Ok(v) => segments = v.into_iter().filter(valido).collect(),
-                Err(_) => {
-                    let mut nome = path.as_os_str().to_owned();
-                    nome.push(".danneggiato");
-                    let _ = std::fs::rename(&path, PathBuf::from(nome));
-                    crate::config::log("call.json danneggiato, messo da parte");
-                }
-            }
+                Err(_) => sola_lettura = !metti_da_parte(&path),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => sola_lettura = !metti_da_parte(&path),
         }
         CallStore {
             path,
             segments,
             open: None,
+            sola_lettura,
         }
     }
 
@@ -53,7 +86,14 @@ impl CallStore {
     pub fn snapshot(&self, now_ms: f64) -> Vec<Segment> {
         let mut v = self.segments.clone();
         if let Some(i) = self.open {
-            if now_ms.is_finite() && now_ms > v[i].end_ms {
+            // Un buco oltre GAP_MS (sospensione) non conta come tempo di call. Un tratto
+            // appena aperto, mai aggiornato, si estende comunque fino a `now`.
+            let s = &v[i];
+            let appena_aperto = s.end_ms == s.start_ms;
+            if now_ms.is_finite()
+                && now_ms > s.end_ms
+                && (appena_aperto || now_ms - s.end_ms <= GAP_MS)
+            {
                 v[i].end_ms = now_ms;
             }
         }
@@ -140,12 +180,16 @@ impl CallStore {
             None => false,
         };
         let cut = cut_range(&snap, from, to, tz);
-        self.segments = cut.kept.into_iter().filter(valido).collect();
+        self.segments = cut.kept;
         self.open = None;
         if let Some(s) = aperto {
             if toccato {
                 self.apri(&s.app, s.auto, now_ms);
-            } else if !self.segments.is_empty() {
+            } else if self
+                .segments
+                .last()
+                .is_some_and(|u| u.start_ms == s.start_ms)
+            {
                 // Il tratto aperto non è stato toccato: è rimasto l'ultimo.
                 self.open = Some(self.segments.len() - 1);
             }
@@ -162,19 +206,36 @@ impl CallStore {
             .map(|ms| crate::callstats::local_date(ms, tz))
     }
 
-    /// Scrittura atomica: file `.tmp` e poi `rename`.
+    /// Scrittura atomica: file `.tmp` e poi `rename`. Gli errori si registrano nel log
+    /// (mai i dati delle call).
     fn save(&self) {
-        let Ok(json) = serde_json::to_string(&self.segments) else {
+        if self.sola_lettura {
             return;
+        }
+        let json = match serde_json::to_string(&self.segments) {
+            Ok(j) => j,
+            Err(_) => {
+                crate::config::log("call.json: serializzazione fallita");
+                return;
+            }
         };
         if let Some(dir) = self.path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                crate::config::log(format!("call.json: cartella non creata ({:?})", e.kind()));
+                return;
+            }
         }
         let mut tmp = self.path.as_os_str().to_owned();
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(&tmp, &self.path);
+        if let Err(e) = std::fs::write(&tmp, json) {
+            crate::config::log(format!("call.json: scrittura fallita ({:?})", e.kind()));
+            let _ = std::fs::remove_file(&tmp);
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp, &self.path) {
+            crate::config::log(format!("call.json: rename fallito ({:?})", e.kind()));
+            let _ = std::fs::remove_file(&tmp);
         }
     }
 }
@@ -271,18 +332,6 @@ mod tests {
     #[test]
     fn tratti_non_validi_scartati() {
         let d = dir("invalidi");
-        let p = d.join("call.json");
-        let json = r#"[
-            {"start_ms":100.0,"end_ms":100.0,"app":"A","auto":true},
-            {"start_ms":200.0,"end_ms":100.0,"app":"B","auto":true},
-            {"start_ms":null,"end_ms":100.0,"app":"C","auto":true},
-            {"start_ms":1000.0,"end_ms":2000.0,"app":"D","auto":true}
-        ]"#;
-        std::fs::write(&p, json).unwrap();
-        let s = CallStore::load(p);
-        // null non è un numero valido per f64: il file intero può risultare danneggiato,
-        // ma in ogni caso nessun tratto non valido deve restare.
-        assert!(s.segments().iter().all(valido));
         let p2 = d.join("b.json");
         std::fs::write(
             &p2,
@@ -333,5 +382,83 @@ mod tests {
         s.touch(now + 20.0 * S);
         assert_eq!(CallStore::load(p).segments().len(), 2);
         assert_eq!(s.first_day(&tz), Some(ieri));
+    }
+
+    #[test]
+    fn file_non_utf8_messo_da_parte() {
+        let d = dir("nonutf8");
+        let p = d.join("call.json");
+        std::fs::write(&p, [0xff, 0xfe, 0x00, 0x9f]).unwrap();
+        let mut s = CallStore::load(p.clone());
+        assert!(s.segments().is_empty());
+        let bak = d.join("call.json.danneggiato");
+        assert_eq!(std::fs::read(&bak).unwrap(), vec![0xff, 0xfe, 0x00, 0x9f]);
+        s.begin(Some("Teams"), true, T);
+        s.end(T + 5.0 * S);
+        assert_eq!(std::fs::read(&bak).unwrap(), vec![0xff, 0xfe, 0x00, 0x9f]);
+    }
+
+    #[test]
+    fn seconda_corruzione_non_distrugge_la_prima() {
+        let d = dir("doppio");
+        let p = d.join("call.json");
+        std::fs::write(d.join("call.json.danneggiato"), "prima").unwrap();
+        std::fs::write(&p, "{seconda").unwrap();
+        let _ = CallStore::load(p);
+        assert_eq!(
+            std::fs::read_to_string(d.join("call.json.danneggiato")).unwrap(),
+            "prima"
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.join("call.json.danneggiato.1")).unwrap(),
+            "{seconda"
+        );
+    }
+
+    #[test]
+    fn file_non_spostabile_non_viene_sovrascritto() {
+        // Simula il caso in cui il file non si può mettere da parte: non si scrive nulla.
+        let d = dir("sololettura");
+        let p = d.join("call.json");
+        std::fs::write(&p, "{rotto").unwrap();
+        let mut s = CallStore::load(p.clone());
+        s.sola_lettura = true;
+        s.begin(Some("Teams"), true, T);
+        assert!(!p.exists());
+    }
+
+    #[test]
+    fn cancella_dopo_sospensione_non_conta_il_buco() {
+        let tz = Utc;
+        let oggi = NaiveDate::from_ymd_opt(2026, 11, 11).unwrap();
+        let ieri = oggi - Duration::days(1);
+        let t0 = crate::callstats::day_start_ms(oggi, &tz) + 9.0 * 3600.0 * S;
+        let mut s = CallStore::load(dir("buco").join("call.json"));
+        s.begin(Some("Teams"), true, t0);
+        s.touch(t0 + 20.0 * S);
+        let now = t0 + 20.0 * S + 2.0 * 3600.0 * S;
+        assert_eq!(s.snapshot(now)[0].end_ms, t0 + 20.0 * S);
+        s.delete_range(ieri, ieri, now, &tz);
+        assert_eq!(s.segments().len(), 1);
+        assert_eq!(s.segments()[0].end_ms, t0 + 20.0 * S);
+    }
+
+    #[test]
+    fn tratto_aperto_di_durata_zero_resta_aperto_dopo_cancellazione() {
+        let tz = Utc;
+        let oggi = NaiveDate::from_ymd_opt(2026, 11, 11).unwrap();
+        let altro = oggi - Duration::days(5);
+        let ieri = oggi - Duration::days(1);
+        let ms = |d: NaiveDate, h: f64| crate::callstats::day_start_ms(d, &tz) + h * 3600.0 * S;
+        let mut s = CallStore::load(dir("zero").join("call.json"));
+        s.begin(Some("Meet"), false, ms(ieri, 10.0));
+        s.end(ms(ieri, 10.0) + 60.0 * S);
+        s.begin(Some("Teams"), true, ms(oggi, 9.0));
+        s.delete_range(altro, altro, ms(oggi, 9.0), &tz);
+        assert!(s.is_open());
+        s.touch(ms(oggi, 9.0) + 20.0 * S);
+        assert_eq!(s.segments().len(), 2);
+        assert_eq!(s.segments()[0].end_ms - s.segments()[0].start_ms, 60.0 * S);
+        assert_eq!(s.segments()[1].end_ms - s.segments()[1].start_ms, 20.0 * S);
     }
 }
