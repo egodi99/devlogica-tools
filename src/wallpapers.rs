@@ -17,6 +17,7 @@ const BUILTIN: &[(&str, &str, &str)] = &[
     ("barre", "Barre diagonali", include_str!("../shaders/barre.wgsl")),
     ("geometrie", "Geometrie", include_str!("../shaders/geometrie.wgsl")),
     ("reticolo", "Reticolo", include_str!("../shaders/reticolo.wgsl")),
+    ("cruscotto", "Cruscotto", include_str!("../shaders/cruscotto.wgsl")),
 ];
 
 pub fn catalog() -> Vec<Wallpaper> {
@@ -53,5 +54,7 @@ pub fn catalog() -> Vec<Wallpaper> {
 }
 
 pub fn full_source(w: &Wallpaper) -> String {
-    format!("{PRELUDE}\n// ---- {} ----\n{}", w.name, w.source)
+    // il cruscotto riceve le posizioni degli strumenti da dash.rs
+    let extra = if w.id == crate::dash::ID { crate::dash::wgsl_consts() } else { String::new() };
+    format!("{PRELUDE}\n{extra}\n// ---- {} ----\n{}", w.name, w.source)
 }

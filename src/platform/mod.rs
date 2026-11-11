@@ -5,6 +5,8 @@
 mod windows;
 #[cfg(windows)]
 pub use self::windows::*;
+#[cfg(windows)]
+pub mod probe_windows;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -29,6 +31,18 @@ mod other {
     pub fn make_overlay(_w: &Window) {}
     pub fn open_url(url: &str) { let _ = std::process::Command::new("xdg-open").arg(url).spawn(); }
 }
+
+// Aspetto delle finestre e area di lavoro: solo Windows.
+#[cfg(not(windows))]
+#[allow(dead_code)]
+mod no_dwm {
+    use winit::window::Window;
+    pub fn style_window(_w: &Window) {}
+    pub fn style_popup(_w: &Window, _border: egui::Color32) {}
+    pub fn work_area(_x: i32, _y: i32) -> Option<(i32, i32, i32, i32)> { None }
+}
+#[cfg(not(windows))]
+pub use no_dwm::*;
 #[cfg(not(any(windows, target_os = "macos")))]
 pub use other::*;
 

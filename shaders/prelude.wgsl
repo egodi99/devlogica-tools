@@ -15,6 +15,7 @@ struct Params {
     logo_on: f32,
     scale: f32,      // pixel disegnati / pixel della finestra
     _p1: f32, _p2: f32,
+    dash: vec4f,     // cruscotto: x = strada percorsa
 };
 
 @group(0) @binding(0) var<uniform> u: Params;

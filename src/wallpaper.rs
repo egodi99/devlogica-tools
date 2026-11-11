@@ -47,6 +47,8 @@ pub struct Wallpapers {
     changed: Instant,
     /// Disegno degli indicatori, uno per formato di superficie; creati solo quando servono.
     overlays: HashMap<wgpu::TextureFormat, Overlay>,
+    /// Cruscotto: statistiche e lancette, solo se uno schermo lo mostra.
+    dash: Option<crate::dash::DashRuntime>,
 }
 
 pub fn monitor_key(m: &MonitorHandle) -> String {
@@ -108,7 +110,7 @@ fn create_window(el: &ActiveEventLoop, m: &MonitorHandle) -> Option<Arc<Window>>
 impl Wallpapers {
     pub fn new() -> Self {
         let now = Instant::now();
-        Self { screens: HashMap::new(), monitors: Vec::new(), monitor_sig: String::new(), start: now, changed: now, overlays: HashMap::new() }
+        Self { screens: HashMap::new(), monitors: Vec::new(), monitor_sig: String::new(), start: now, changed: now, overlays: HashMap::new(), dash: None }
     }
 
     pub fn owns(&self, id: WindowId) -> bool {
@@ -138,6 +140,7 @@ impl Wallpapers {
             })
             .collect();
         if mons.is_empty() || !cfg.wallpaper_enabled {
+            self.dash = None;
             if gpu.is_none() {
                 match Gpu::new(render::new_instance(), None) {
                     Ok(g) => *gpu = Some(g),
@@ -202,6 +205,11 @@ impl Wallpapers {
         }
         let g = gpu.as_mut().unwrap();
         let in_use: Vec<String> = created.iter().map(|c| c.2.clone()).collect();
+        if in_use.iter().any(|w| w == crate::dash::ID) {
+            self.dash.get_or_insert_with(crate::dash::DashRuntime::new);
+        } else {
+            self.dash = None;
+        }
         g.retain_pipelines(&in_use);
         for (window, surface, wallpaper, offset, canvas, size, global) in created {
             let id = window.id();
@@ -219,9 +227,10 @@ impl Wallpapers {
 
     pub fn clear(&mut self) {
         self.screens.clear();
+        self.dash = None;
     }
 
-    pub fn render(&mut self, gpu: &mut Gpu, cfg: &Config, catalog: &[Wallpaper], ind: Option<&IndicatorState>) {
+    pub fn render(&mut self, gpu: &mut Gpu, cfg: &Config, catalog: &[Wallpaper], ind: Option<&IndicatorState>, office: crate::dash::DashOffice) {
         if self.screens.is_empty() {
             return;
         }
@@ -237,6 +246,8 @@ impl Wallpapers {
             None => near(g.x, 0.0) && near(g.y, 0.0),
         };
         let opacity = { let t = ((since - 1.3) / (2.6 - 1.3)).clamp(0.0, 1.0); t * t * (3.0 - 2.0 * t) };
+        let dash_stats = self.dash.as_mut().map(|d| d.step(since));
+        let road = self.dash.as_ref().map(|d| d.road).unwrap_or(0.0);
         for screen in self.screens.values_mut() {
             if screen.occluded {
                 continue;
@@ -251,8 +262,26 @@ impl Wallpapers {
                 logo_on: logo,
                 scale: screen.target.scale,
                 _pad: [0.0; 2],
+                dash: [road, 0.0, 0.0, 0.0],
             };
             let w = catalog.iter().find(|w| w.id == screen.wallpaper).unwrap_or(&catalog[0]);
+            if w.id == crate::dash::ID {
+                if let (Some(rt), Some(stats)) = (self.dash.as_mut(), dash_stats) {
+                    let frame = crate::dash::DashFrame {
+                        size_px: [screen.target.config.width, screen.target.config.height],
+                        scale: screen.target.scale,
+                        offset: screen.offset,
+                        canvas: screen.canvas,
+                        stats,
+                        office,
+                        since,
+                    };
+                    let format = screen.target.format;
+                    let mut extra = |g: &Gpu, enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| rt.draw(g, enc, view, format, &frame);
+                    gpu.draw(&mut screen.target, w, params, Some(&mut extra));
+                    continue;
+                }
+            }
             match ind.filter(|_| dock_screen(&screen.global)) {
                 Some(state) => {
                     let format = screen.target.format;

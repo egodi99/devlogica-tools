@@ -1,7 +1,8 @@
 //! Finestre dell'interfaccia (egui): avviso call, pausa caffè, richiesta di conferma,
 //! impostazioni. Esistono solo quando sono visibili, così l'app resta leggera.
 
-use crate::config::{AlertStyle, Config, Detection};
+use crate::config::Config;
+use crate::theme::{self, ic, Kind};
 use chrono::{Datelike, NaiveDate};
 use crate::detect::MicUser;
 use crate::office::Office;
@@ -17,19 +18,13 @@ use winit::event_loop::ActiveEventLoop;
 use winit::monitor::MonitorHandle;
 use winit::window::{Window, WindowAttributes, WindowLevel};
 
-// ---------- palette ----------
-pub const INK: Color32 = Color32::from_rgb(14, 9, 28);
-const INK_2: Color32 = Color32::from_rgb(26, 18, 46);
-const LILAC: Color32 = Color32::from_rgb(194, 136, 214);
-const SKY: Color32 = Color32::from_rgb(112, 189, 232);
-pub const RED: Color32 = Color32::from_rgb(255, 59, 48);
-pub const RED_BG: Color32 = Color32::from_rgb(28, 7, 9);
-pub const RED_SOFT: Color32 = Color32::from_rgb(255, 180, 170);
-const AMBER: Color32 = Color32::from_rgb(240, 170, 70);
-pub const COFFEE_BG: Color32 = Color32::from_rgb(26, 17, 10);
-const GREEN: Color32 = Color32::from_rgb(52, 199, 89);
-pub const TEXT: Color32 = Color32::from_rgb(241, 234, 247);
-pub const MUTED: Color32 = Color32::from_rgb(170, 160, 190);
+// ---------- palette (alias dei colori del tema, usati anche da statsui) ----------
+pub const INK: Color32 = theme::BG;
+pub const RED_SOFT: Color32 = theme::RED_TEXT;
+pub const TEXT: Color32 = theme::TEXT;
+pub const MUTED: Color32 = theme::TEXT_2;
+/// Fondo delle finestre di avviso.
+pub const PANEL_BG: Color32 = theme::BG_SIDE;
 
 /// Azioni scelte dall'utente nelle finestre, eseguite poi dall'app.
 #[derive(Clone, Debug)]
@@ -55,6 +50,38 @@ pub enum UiAction {
     DeleteCalls,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     OpenAccessibility,
+    /// Una voce che esiste anche nel menu dell'icona (sfondi, call, caffè, uscita…).
+    Menu(crate::tray::Action),
+    /// Suona l'avviso al volume scelto.
+    TestSound,
+    /// Chiude il menu a comparsa dell'icona.
+    ClosePopup,
+    /// Apre la cartella con log, impostazioni e storico.
+    OpenAppDir,
+    /// Apre le Impostazioni su una pagina.
+    OpenSettings(Page),
+}
+
+/// Pagine della finestra Impostazioni.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Page {
+    #[default]
+    Home,
+    Calls,
+    Alerts,
+    Wallpaper,
+    MyCalls,
+    Diagnostics,
+    About,
+}
+
+/// Pagine del menu a comparsa dell'icona.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TrayPage {
+    #[default]
+    Main,
+    Coffee,
+    Wallpaper,
 }
 
 /// Dati che le finestre possono leggere (e, per le impostazioni, modificare).
@@ -73,6 +100,17 @@ pub struct View<'a> {
     pub delete: &'a mut DeleteForm,
     /// Primo giorno con una call registrata, per il pulsante "Tutto".
     pub first_call_day: Option<NaiveDate>,
+    /// Pagina aperta nelle Impostazioni e nel menu a comparsa.
+    pub page: &'a mut Page,
+    pub tray_page: &'a mut TrayPage,
+    /// Settimana in corso delle mie call (per la panoramica) e totale di oggi.
+    pub week: Option<&'a crate::callstats::Report>,
+    pub today_ms: f64,
+    pub autostart: bool,
+    pub catalog: &'a [crate::wallpapers::Wallpaper],
+    pub monitors: &'a [crate::tray::MonitorInfo],
+    /// Miniature degli sfondi per la galleria (id, texture).
+    pub thumbs: &'a [(String, Arc<egui::ColorImage>)],
     pub actions: Vec<UiAction>,
 }
 
@@ -114,6 +152,9 @@ impl UiWin {
         let window = Arc::new(el.create_window(attrs.with_visible(false)).ok()?);
         if overlay {
             crate::platform::make_overlay(&window);
+            crate::platform::style_popup(&window, theme::BORDER);
+        } else {
+            crate::platform::style_window(&window);
         }
         let surface = gpu.instance.create_surface(window.clone()).ok()?;
         let format = gpu.surface_format(&surface);
@@ -252,20 +293,7 @@ impl UiWin {
 }
 
 pub fn setup_style(ctx: &egui::Context) {
-    let mut v = egui::Visuals::dark();
-    v.panel_fill = INK;
-    v.window_fill = INK;
-    v.extreme_bg_color = INK_2;
-    v.selection.bg_fill = Color32::from_rgb(134, 18, 173);
-    v.hyperlink_color = SKY;
-    v.widgets.inactive.weak_bg_fill = Color32::from_rgb(44, 32, 70);
-    v.widgets.hovered.weak_bg_fill = Color32::from_rgb(64, 46, 100);
-    v.widgets.active.weak_bg_fill = Color32::from_rgb(86, 60, 130);
-    ctx.set_visuals(v);
-    ctx.all_styles_mut(|s| {
-        s.spacing.item_spacing = Vec2::new(8.0, 8.0);
-        s.spacing.button_padding = Vec2::new(12.0, 6.0);
-    });
+    theme::install(ctx);
 }
 
 // ============================================================================
@@ -358,126 +386,167 @@ fn mmss(start_ms: f64) -> String {
     }
 }
 
-fn avatar(ui: &mut egui::Ui, name: &str, color: Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(36.0), egui::Sense::hover());
-    ui.painter().circle_filled(rect.center(), 18.0, color);
-    let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into());
-    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initial, egui::FontId::proportional(17.0), Color32::WHITE);
+/// Cornice comune delle finestre di avviso: bordo sottile e, sopra, una riga colorata.
+fn alert_frame(ui: &mut egui::Ui, accent: Color32, add: impl FnOnce(&mut egui::Ui)) {
+    let rect = ui.max_rect();
+    let p = ui.painter();
+    p.rect_stroke(rect.shrink(0.5), theme::R_MD, Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Inside);
+    p.rect_filled(egui::Rect::from_min_size(rect.min, Vec2::new(rect.width(), 3.0)), egui::CornerRadius { nw: theme::R_MD, ne: theme::R_MD, sw: 0, se: 0 }, accent);
+    egui::Frame::new().inner_margin(egui::Margin { left: 20, right: 16, top: 16, bottom: 14 }).show(ui, |ui| {
+        ui.set_min_size(ui.available_size());
+        add(ui)
+    });
 }
 
-fn button(ui: &mut egui::Ui, text: &str, fill: Color32, fg: Color32) -> bool {
-    ui.add(egui::Button::new(RichText::new(text).color(fg).size(14.0)).fill(fill).corner_radius(8.0)).clicked()
+/// Cerchio colorato con un'icona al centro.
+fn icon_badge(ui: &mut egui::Ui, code: &str, fg: Color32, bg: Color32, size: f32) {
+    let (r, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
+    ui.painter().circle_filled(r.center(), size / 2.0, bg);
+    theme::paint_icon(ui.painter(), r.center(), code, size * 0.42, fg);
 }
+
+const CALL_ROW: f32 = 58.0;
 
 /// Altezza del riquadro call in base al numero di call mostrate.
 pub fn call_panel_height(n: usize) -> f64 {
-    96.0 + 56.0 * n as f64
+    80.0 + CALL_ROW as f64 * n as f64
 }
 
 pub fn call_panel(ui: &mut egui::Ui, v: &mut View) {
-    let calls: Vec<_> = v.office.calls.values().collect();
-    let mut calls = calls;
+    let mut calls: Vec<_> = v.office.calls.values().collect();
     calls.sort_by(|a, b| a.start_ms.total_cmp(&b.start_ms));
-    egui::Frame::new().fill(RED_BG).stroke(Stroke::new(2.0, RED)).inner_margin(16.0).show(ui, |ui| {
-        ui.set_min_size(ui.available_size());
+    alert_frame(ui, theme::RED, |ui| {
         ui.horizontal(|ui| {
-            // pallino che pulsa
-            let t = ui.input(|i| i.time);
-            let (r, _) = ui.allocate_exact_size(Vec2::splat(40.0), egui::Sense::hover());
-            let k = (0.5 + 0.5 * (t * std::f64::consts::TAU / 1.4).sin()) as f32;
-            ui.painter().circle_filled(r.center(), 16.0 + 3.0 * k, RED.gamma_multiply(0.25 + 0.25 * k));
-            ui.painter().circle_filled(r.center(), 8.0, RED);
+            ui.add_space(2.0);
+            theme::status_dot(ui, theme::RED, true);
+            ui.add_space(4.0);
             ui.vertical(|ui| {
-                ui.label(RichText::new("CALL IN CORSO — Silenzio!").size(20.0).strong().color(TEXT));
+                ui.spacing_mut().item_spacing.y = 1.0;
                 let n = calls.len();
-                ui.label(RichText::new(if n == 1 { "1 call attiva".to_string() } else { format!("{n} call attive") }).size(12.0).color(RED_SOFT));
+                ui.label(RichText::new(if n == 1 { "CALL IN CORSO".to_string() } else { format!("{n} CALL IN CORSO") }).family(theme::semibold_family()).size(11.0).color(theme::RED_TEXT).extra_letter_spacing(0.8));
+                ui.label(theme::strong("Silenzio, per favore", 17.0));
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if button(ui, "Ho capito", Color32::from_white_alpha(18), TEXT) {
+                if theme::button(ui, Kind::Secondary, "Ho capito").clicked() {
                     v.actions.push(UiAction::DismissCalls);
                 }
             });
         });
-        ui.add_space(6.0);
+        ui.add_space(4.0);
+        ui.spacing_mut().item_spacing.y = 0.0;
         for c in &calls {
-            egui::Frame::new().fill(Color32::from_rgb(40, 12, 14)).corner_radius(10.0).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    avatar(ui, &c.user, Color32::from_rgb(230, 70, 50));
-                    ui.vertical(|ui| {
-                        let who = if c.mine { format!("{} (tu)", c.user) } else { c.user.clone() };
-                        ui.label(RichText::new(who).size(15.0).strong().color(TEXT));
-                        ui.label(RichText::new(c.app.clone().unwrap_or_else(|| "In call".into())).size(12.0).color(RED_SOFT));
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if c.mine && button(ui, "Termina", Color32::from_rgb(90, 20, 20), Color32::from_rgb(255, 120, 110)) {
-                            v.actions.push(UiAction::EndMyCall);
-                        }
-                        ui.label(RichText::new(mmss(c.start_ms)).size(15.0).monospace().color(Color32::from_rgb(255, 130, 120)));
-                    });
-                });
-            });
+            let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), CALL_ROW), egui::Sense::hover());
+            let p = ui.painter();
+            p.hline(row.left()..=row.right(), row.top(), Stroke::new(1.0, theme::BORDER_SOFT));
+            let cy = row.center().y;
+            theme::paint_avatar(p, egui::pos2(row.left() + 17.0, cy), &c.user, 34.0);
+            let x = row.left() + 46.0;
+            let name = p.layout_no_wrap(c.user.clone(), egui::FontId::new(14.5, theme::semibold_family()), theme::TEXT);
+            let name_w = name.size().x;
+            p.galley(egui::pos2(x, cy - 19.0), name, theme::TEXT);
+            if c.mine {
+                p.text(egui::pos2(x + name_w + 6.0, cy - 10.5), egui::Align2::LEFT_CENTER, "tu", egui::FontId::proportional(12.0), theme::TEXT_3);
+            }
+            theme::paint_icon(p, egui::pos2(x + 6.0, cy + 10.0), ic::PHONE, 11.0, theme::TEXT_3);
+            let app_x = if theme::has_icons() { x + 18.0 } else { x };
+            p.text(egui::pos2(app_x, cy + 10.0), egui::Align2::LEFT_CENTER, c.app.clone().unwrap_or_else(|| "In call".into()), egui::FontId::proportional(12.5), theme::TEXT_2);
+            let mut right = row.right();
+            if c.mine {
+                let br = egui::Rect::from_min_max(egui::pos2(right - 86.0, cy - 16.0), egui::pos2(right, cy + 16.0));
+                let clicked = ui.scope_builder(egui::UiBuilder::new().max_rect(br).layout(Layout::right_to_left(Align::Center)), |ui| theme::button(ui, Kind::Danger, "Termina").clicked()).inner;
+                if clicked {
+                    v.actions.push(UiAction::EndMyCall);
+                }
+                right -= 98.0;
+            }
+            ui.painter().text(egui::pos2(right, cy), egui::Align2::RIGHT_CENTER, mmss(c.start_ms), egui::FontId::new(15.0, theme::semibold_family()), theme::TEXT);
         }
     });
     ui.ctx().request_repaint_after(Duration::from_millis(250));
 }
 
-pub fn coffee_panel_height(rows: usize) -> f64 {
-    232.0 + 26.0 * rows as f64
+pub fn coffee_panel_height(rows: usize, mine: bool) -> f64 {
+    let answer = if mine { 0.0 } else { 54.0 };
+    196.0 + answer + 38.0 * rows as f64
 }
 
 pub fn coffee_panel(ui: &mut egui::Ui, v: &mut View) {
     let Some(c) = v.office.coffee.as_ref() else { return };
     let mine = c.mine;
     let my_answer = c.rsvp.get(&v.me).cloned();
-    egui::Frame::new().fill(COFFEE_BG).stroke(Stroke::new(2.0, AMBER)).inner_margin(18.0).show(ui, |ui| {
-        ui.set_min_size(ui.available_size());
-        ui.vertical_centered(|ui| {
-            ui.label(RichText::new("Pausa caffè").size(24.0).strong().color(AMBER));
-            let when = match c.in_minutes {
-                Some(m) if m > 0 => format!("tra {m} minuti"),
-                _ => "adesso".to_string(),
-            };
-            let who = if mine { "Proposta da te".to_string() } else { format!("Proposta da {}", c.by) };
-            ui.label(RichText::new(format!("{who} · {when}")).size(14.0).color(TEXT));
+    alert_frame(ui, theme::AMBER, |ui| {
+        ui.horizontal(|ui| {
+            icon_badge(ui, ic::COFFEE, theme::AMBER, theme::AMBER_BG, 42.0);
+            ui.add_space(4.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.label(theme::strong("Pausa caffè", 18.0));
+                let who = if mine { "Proposta da te".to_string() } else { format!("Proposta da {}", c.by) };
+                ui.label(RichText::new(who).size(13.0).color(theme::TEXT_2));
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let when = match c.in_minutes {
+                    Some(m) if m > 0 => format!("Tra {m} min"),
+                    _ => "Adesso".to_string(),
+                };
+                theme::chip(ui, &when, theme::AMBER, theme::AMBER_BG);
+            });
         });
-        ui.add_space(10.0);
+        ui.add_space(14.0);
         if !mine {
             ui.horizontal(|ui| {
                 let w = (ui.available_width() - 8.0) / 2.0;
                 let yes_on = my_answer.as_deref() == Some("yes");
                 let no_on = my_answer.as_deref() == Some("no");
-                if ui.add_sized([w, 36.0], egui::Button::new(RichText::new("Vengo!").size(15.0).color(if yes_on { Color32::BLACK } else { TEXT })).fill(if yes_on { GREEN } else { Color32::from_rgb(40, 60, 40) }).corner_radius(8.0)).clicked() {
+                let yes = egui::Button::new(RichText::new(format!("{}  Vengo", if theme::has_icons() && yes_on { ic::CHECK } else { "" })).family(theme::semibold_family()).size(14.0).color(if yes_on { Color32::from_rgb(30, 20, 6) } else { theme::TEXT }))
+                    .fill(if yes_on { theme::AMBER } else { theme::SURFACE_HI })
+                    .stroke(if yes_on { Stroke::NONE } else { Stroke::new(1.0, theme::BORDER) })
+                    .corner_radius(theme::R_SM);
+                if ui.add_sized([w, 38.0], yes).clicked() {
                     v.actions.push(UiAction::Rsvp(true));
                 }
-                if ui.add_sized([w, 36.0], egui::Button::new(RichText::new("Non posso").size(15.0).color(TEXT)).fill(if no_on { Color32::from_rgb(150, 40, 40) } else { Color32::from_rgb(60, 32, 32) }).corner_radius(8.0)).clicked() {
+                let no = egui::Button::new(RichText::new("Non posso").family(theme::semibold_family()).size(14.0).color(if no_on { theme::RED_TEXT } else { theme::TEXT }))
+                    .fill(if no_on { theme::RED_BG } else { theme::SURFACE_HI })
+                    .stroke(Stroke::new(1.0, if no_on { Color32::from_rgb(92, 40, 42) } else { theme::BORDER }))
+                    .corner_radius(theme::R_SM);
+                if ui.add_sized([w, 38.0], no).clicked() {
                     v.actions.push(UiAction::Rsvp(false));
                 }
             });
-            ui.add_space(6.0);
+            ui.add_space(14.0);
         }
-        ui.label(RichText::new("Risposte").size(12.0).color(MUTED));
+        let yes_n = c.rsvp.values().filter(|a| a.as_str() == "yes").count();
+        ui.horizontal(|ui| {
+            ui.label(theme::eyebrow("Risposte"));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(RichText::new(if yes_n == 1 { "1 viene".to_string() } else { format!("{yes_n} vengono") }).size(12.0).color(theme::TEXT_3));
+            });
+        });
+        ui.add_space(2.0);
         if c.rsvp.is_empty() {
-            ui.label(RichText::new("Ancora nessuna risposta").size(13.0).italics().color(MUTED));
+            ui.add_space(6.0);
+            ui.label(RichText::new("Ancora nessuna risposta").size(13.0).color(theme::TEXT_3));
         }
         for (user, answer) in &c.rsvp {
             ui.horizontal(|ui| {
-                let (icon, color, text) = match answer.as_str() {
-                    "yes" => ("✔", GREEN, "viene"),
-                    crate::office::IN_CALL => ("📞", MUTED, "in call"),
-                    _ => ("✖", RED, "non può"),
-                };
-                ui.label(RichText::new(icon).color(color));
-                ui.label(RichText::new(user).size(14.0).color(TEXT));
-                ui.label(RichText::new(text).size(12.0).color(MUTED));
+                ui.set_min_height(30.0);
+                theme::avatar(ui, user, 26.0);
+                ui.label(RichText::new(user).size(14.0).color(theme::TEXT));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    match answer.as_str() {
+                        "yes" => theme::chip(ui, "Viene", theme::GREEN, theme::GREEN_BG),
+                        crate::office::IN_CALL => theme::chip(ui, "In call", theme::TEXT_2, theme::SURFACE_HI),
+                        _ => theme::chip(ui, "Non può", theme::RED_TEXT, theme::RED_BG),
+                    };
+                });
             });
         }
-        ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+        ui.with_layout(Layout::bottom_up(Align::Max), |ui| {
             if mine {
-                if button(ui, "Fine pausa caffè", Color32::from_rgb(90, 60, 20), TEXT) {
+                if theme::button(ui, Kind::Amber, "Termina la pausa").clicked() {
                     v.actions.push(UiAction::EndCoffee);
                 }
-            } else if button(ui, "Chiudi", Color32::from_white_alpha(18), TEXT) {
+            } else if theme::button(ui, Kind::Secondary, "Chiudi").clicked() {
                 v.actions.push(UiAction::DismissCoffee);
             }
         });
@@ -486,76 +555,33 @@ pub fn coffee_panel(ui: &mut egui::Ui, v: &mut View) {
 
 pub fn ask_panel(ui: &mut egui::Ui, v: &mut View) {
     let app = v.ask.unwrap_or("un'app di call");
-    egui::Frame::new().fill(INK).stroke(Stroke::new(1.5, LILAC)).inner_margin(16.0).show(ui, |ui| {
-        ui.set_min_size(ui.available_size());
-        ui.label(RichText::new("Sei entrato in call?").size(17.0).strong().color(TEXT));
-        ui.label(RichText::new(format!("Il microfono è in uso da {app}.")).size(13.0).color(MUTED));
-        ui.add_space(4.0);
+    alert_frame(ui, theme::ACCENT, |ui| {
         ui.horizontal(|ui| {
-            if button(ui, "Avvisa l'ufficio", Color32::from_rgb(134, 18, 173), Color32::WHITE) {
-                v.actions.push(UiAction::AskYes);
-            }
-            if button(ui, "No", Color32::from_white_alpha(18), TEXT) {
-                v.actions.push(UiAction::AskNo);
-            }
+            icon_badge(ui, ic::MIC, theme::ACCENT_TEXT, theme::ACCENT_BG, 38.0);
+            ui.add_space(2.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.label(theme::strong("Sei entrato in call?", 15.5));
+                ui.label(RichText::new(format!("Il microfono è in uso da {app}.")).size(12.5).color(theme::TEXT_2));
+            });
+        });
+        ui.with_layout(Layout::bottom_up(Align::Max), |ui| {
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::button(ui, Kind::Primary, "Avvisa l'ufficio").clicked() {
+                        v.actions.push(UiAction::AskYes);
+                    }
+                    if theme::button(ui, Kind::Secondary, "No").clicked() {
+                        v.actions.push(UiAction::AskNo);
+                    }
+                });
+            });
         });
     });
 }
 
 pub fn section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(10.0);
-    ui.label(RichText::new(title).size(15.0).strong().color(LILAC));
-}
-
-/// Indicatori sullo sfondo: solo su macOS, dove il Dock lascia libere le zone ai lati.
-#[cfg(target_os = "macos")]
-fn indicators_section(ui: &mut egui::Ui, v: &mut View) {
-    use crate::config::{IndicatorStyle, Side};
-    section(ui, "Indicatori sullo sfondo");
-    let ind = &mut v.cfg.indicators;
-    ui.checkbox(&mut ind.enabled, "Mostra CPU, RAM, orologio e logo ai lati del Dock");
-    ui.label(RichText::new("Fanno parte dello sfondo animato: con gli sfondi disattivati o in pausa non si vedono.").size(12.0).color(MUTED));
-    ui.add_enabled_ui(ind.enabled, |ui| {
-        ui.horizontal(|ui| {
-            ui.label("Stile");
-            ui.radio_value(&mut ind.style, IndicatorStyle::Text, "Solo testo");
-            ui.radio_value(&mut ind.style, IndicatorStyle::Pills, "Pillole come il Dock");
-            ui.radio_value(&mut ind.style, IndicatorStyle::BigClock, "Orologio grande");
-        });
-        egui::Grid::new("indicatori").num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
-            for (label, side) in [("Logo", &mut ind.logo), ("Orologio", &mut ind.clock), ("RAM", &mut ind.ram), ("CPU", &mut ind.cpu)] {
-                ui.label(label);
-                ui.radio_value(side, Side::Hidden, "Nascosto");
-                ui.radio_value(side, Side::Left, "Sinistra");
-                ui.radio_value(side, Side::Right, "Destra");
-                ui.end_row();
-            }
-        });
-        let pct = |v: f64, _: std::ops::RangeInclusive<usize>| format!("{:.0}%", v * 100.0);
-        ui.horizontal(|ui| {
-            ui.label("Dimensione dei testi");
-            ui.add(egui::Slider::new(&mut ind.text_scale, 0.75..=2.0).step_by(0.05).custom_formatter(pct));
-        });
-        ui.horizontal(|ui| {
-            ui.label("Dimensione del logo");
-            ui.add(egui::Slider::new(&mut ind.logo_scale, 0.75..=2.0).step_by(0.05).custom_formatter(pct));
-        });
-        if ui.small_button("Ripristina").clicked() {
-            ind.text_scale = 1.0;
-            ind.logo_scale = 1.0;
-        }
-        if v.ax_trusted {
-            ui.label(RichText::new("Posizione esatta del Dock: consentita").color(TEXT));
-        } else {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Posizione esatta del Dock: non consentita").color(TEXT));
-                if ui.small_button("Consenti in Accessibilità…").clicked() {
-                    v.actions.push(UiAction::OpenAccessibility);
-                }
-            });
-            ui.label(RichText::new("Senza permesso lascio libera una fascia al centro. Dopo un aggiornamento può servire ridare il permesso.").size(12.0).color(MUTED));
-        }
-    });
+    theme::section_title(ui, title);
 }
 
 fn to_jiff(d: NaiveDate) -> jiff::civil::Date {
@@ -567,7 +593,7 @@ fn from_jiff(d: jiff::civil::Date, prima: NaiveDate) -> NaiveDate {
 }
 
 /// Selettore di una data (gg/mm/aaaa). Restituisce true se è cambiata.
-fn date_field(ui: &mut egui::Ui, id: &str, d: &mut NaiveDate) -> bool {
+pub fn date_field(ui: &mut egui::Ui, id: &str, d: &mut NaiveDate) -> bool {
     let mut j = to_jiff(*d);
     ui.add(egui_extras::DatePickerButton::new(&mut j).id_salt(id).format("%d/%m/%Y").calendar_week(false));
     let nuova = from_jiff(j, *d);
@@ -576,179 +602,6 @@ fn date_field(ui: &mut egui::Ui, id: &str, d: &mut NaiveDate) -> bool {
     cambiata
 }
 
-/// "Le mie call": finestra, interruttore della registrazione e cancellazione dello storico.
-fn my_calls_section(ui: &mut egui::Ui, v: &mut View) {
-    section(ui, "Le mie call");
-    if ui.small_button("Le mie call…").clicked() {
-        v.actions.push(UiAction::OpenCallStats);
-    }
-    ui.checkbox(&mut v.cfg.record_calls, "Registra le mie call");
-    let f = &mut *v.delete;
-    if ui.small_button("Cancella lo storico…").clicked() {
-        if f.open {
-            f.open = false;
-        } else {
-            *f = DeleteForm { open: true, ..DeleteForm::new(chrono::Local::now().date_naive()) };
-        }
-    }
-    if !f.open {
-        return;
-    }
-    // durante la conferma l'intervallo resta bloccato: il testo deve corrispondere
-    let in_conferma = f.confirm.is_some_and(|(n, _)| n > 0);
-    ui.add_enabled_ui(!in_conferma, |ui| {
-        ui.horizontal(|ui| {
-            let mut cambiato = false;
-            ui.label("Dal");
-            cambiato |= date_field(ui, "cancella_dal", &mut f.from);
-            ui.label("Al");
-            cambiato |= date_field(ui, "cancella_al", &mut f.to);
-            let tutto = ui.add_enabled(v.first_call_day.is_some(), egui::Button::new("Tutto").small());
-            if tutto.clicked() {
-                if let Some(d) = v.first_call_day {
-                    f.from = d;
-                    f.to = chrono::Local::now().date_naive();
-                    cambiato = true;
-                }
-            }
-            if f.from > f.to {
-                std::mem::swap(&mut f.from, &mut f.to);
-            }
-            if cambiato {
-                f.confirm = None;
-            }
-            if ui.small_button("Cancella").clicked() {
-                v.actions.push(UiAction::PreviewDelete);
-            }
-        });
-    });
-    match f.confirm {
-        Some((0, _)) => {
-            ui.label(RichText::new("Nessuna call in questo intervallo").italics().color(MUTED));
-        }
-        Some((n, ms)) => {
-            ui.label(RichText::new(crate::callstats::confirm_text(n, ms, f.from, f.to)).color(RED_SOFT));
-            ui.horizontal(|ui| {
-                if ui.small_button("Cancella").clicked() {
-                    v.actions.push(UiAction::DeleteCalls);
-                }
-                if ui.small_button("Annulla").clicked() {
-                    f.confirm = None;
-                    f.open = false;
-                }
-            });
-        }
-        None => {}
-    }
-}
-
-pub fn settings(ui: &mut egui::Ui, v: &mut View) {
-    let before = v.cfg.clone();
-    egui::Frame::new().fill(INK).inner_margin(18.0).show(ui, |ui| {
-        ui.set_min_size(ui.available_size());
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.label(RichText::new("DevLogica Tools").size(22.0).strong().color(TEXT));
-            ui.label(RichText::new(format!("Versione {}", env!("CARGO_PKG_VERSION"))).size(12.0).color(MUTED));
-            ui.horizontal_wrapped(|ui| {
-                use crate::update::UpdateCmd;
-                for (text, enabled, cmd) in v.update.menu_items() {
-                    match cmd {
-                        Some(c) if enabled => {
-                            if ui.small_button(text).clicked() {
-                                v.actions.push(match c {
-                                    UpdateCmd::Check => UiAction::CheckUpdates,
-                                    UpdateCmd::Install => UiAction::InstallUpdate,
-                                    UpdateCmd::OpenPage => UiAction::OpenUpdate,
-                                });
-                            }
-                        }
-                        _ => {
-                            ui.label(RichText::new(text).size(12.0).color(MUTED));
-                        }
-                    }
-                }
-            });
-            if let crate::update::UpdateState::Failed { reason, .. } = v.update {
-                ui.label(RichText::new(format!("Aggiornamento non riuscito: {reason}")).size(12.0).color(RED_SOFT));
-            }
-
-            section(ui, "Il tuo nome");
-            ui.label(RichText::new("È quello che vedono i colleghi negli avvisi.").size(12.0).color(MUTED));
-            ui.add(egui::TextEdit::singleline(&mut v.cfg.name).hint_text("es. Emanuele").desired_width(f32::INFINITY));
-
-            section(ui, "Riconoscimento delle call");
-            ui.radio_value(&mut v.cfg.detection, Detection::Auto, "Automatico: avvisa l'ufficio quando entro in call");
-            ui.radio_value(&mut v.cfg.detection, Detection::Ask, "Chiedi conferma prima di avvisare");
-            ui.radio_value(&mut v.cfg.detection, Detection::Off, "Disattivato: solo dal menu");
-            ui.checkbox(&mut v.cfg.detect_unknown, "Considera call anche le app non riconosciute");
-
-            section(ui, "Avvisi delle call dei colleghi");
-            ui.radio_value(&mut v.cfg.alert_style, AlertStyle::Full, "Bordo rosso e riquadro (come Call Alert)");
-            ui.radio_value(&mut v.cfg.alert_style, AlertStyle::Panel, "Solo il riquadro");
-            ui.radio_value(&mut v.cfg.alert_style, AlertStyle::Tray, "Solo l'icona nella barra");
-            ui.horizontal(|ui| {
-                ui.label("Volume del suono");
-                ui.add(egui::Slider::new(&mut v.cfg.volume, 0.0..=1.0).show_value(false));
-            });
-
-            my_calls_section(ui, v);
-
-            #[cfg(target_os = "macos")]
-            indicators_section(ui, v);
-
-            section(ui, "Microfono in uso adesso");
-            ui.label(RichText::new("Utile per capire cosa viene riconosciuto sul tuo computer.").size(12.0).color(MUTED));
-            if v.mic.is_empty() {
-                ui.label(RichText::new("Nessuna app sta usando il microfono").italics().color(MUTED));
-            }
-            for m in v.mic {
-                ui.horizontal(|ui| {
-                    let ignored = v.cfg.ignored_apps.contains(&m.id);
-                    let status = if ignored {
-                        "ignorata"
-                    } else if m.known_call_app {
-                        "app di call"
-                    } else {
-                        "non riconosciuta"
-                    };
-                    ui.label(RichText::new(&m.label).strong().color(TEXT));
-                    ui.label(RichText::new(status).size(12.0).color(MUTED));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ignored {
-                            if ui.small_button("Non ignorare").clicked() {
-                                v.actions.push(UiAction::Unignore(m.id.clone()));
-                            }
-                        } else if ui.small_button("Ignora").clicked() {
-                            v.actions.push(UiAction::Ignore(m.id.clone()));
-                        }
-                    });
-                });
-            }
-            if !v.cfg.ignored_apps.is_empty() {
-                ui.collapsing(format!("App ignorate ({})", v.cfg.ignored_apps.len()), |ui| {
-                    for id in v.cfg.ignored_apps.clone() {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(&id).size(11.0).color(MUTED));
-                            if ui.small_button("Rimuovi").clicked() {
-                                v.actions.push(UiAction::Unignore(id.clone()));
-                            }
-                        });
-                    }
-                });
-            }
-
-            section(ui, "Colleghi in rete");
-            if v.peers.is_empty() {
-                ui.label(RichText::new("Nessun collega trovato per ora").italics().color(MUTED));
-            } else {
-                ui.label(RichText::new(v.peers.join(", ")).color(TEXT));
-            }
-        });
-    });
-    if *v.cfg != before {
-        v.actions.push(UiAction::ConfigChanged);
-    }
-}
 
 /// Disegna un riquadro in un'immagine, senza finestre (anteprime e verifiche: --ui).
 pub fn render_preview(gpu: &Gpu, w: u32, h: u32, ppp: f32, bg: Color32, mut build: impl FnMut(&mut egui::Ui)) -> Vec<u8> {

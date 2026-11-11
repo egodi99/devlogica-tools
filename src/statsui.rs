@@ -2,7 +2,11 @@
 //! Schede Giorno / Settimana / Mese / Anno, frecce per scorrere i periodi.
 
 use crate::callstats::{fmt_duration, Bar, Period, PeriodKind, Report};
-use crate::ui::{section, INK, MUTED, RED, RED_SOFT, TEXT};
+use crate::theme;
+use crate::ui::{section, INK, MUTED, RED_SOFT, TEXT};
+
+/// Colore delle barre e della scheda scelta (l'accento del tema).
+const RED: Color32 = theme::ACCENT;
 use chrono::{NaiveDate, TimeZone};
 use egui::{
     Align, Align2, Color32, CornerRadius, FontId, Layout, Rect, RichText, Sense, Stroke, Vec2,
@@ -10,8 +14,8 @@ use egui::{
 use std::time::Duration;
 
 /// Barre dei giorni (o mesi) che devono ancora arrivare.
-const DIM: Color32 = Color32::from_rgb(78, 44, 52);
-const AXIS: Color32 = Color32::from_rgb(58, 46, 72);
+const DIM: Color32 = Color32::from_rgb(44, 40, 56);
+const AXIS: Color32 = theme::BORDER;
 
 /// Scelte dell'utente nella finestra, eseguite poi dall'app.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,7 +40,7 @@ pub fn stats_panel(
         .inner_margin(18.0)
         .show(ui, |ui| {
             ui.set_min_size(ui.available_size());
-            ui.label(RichText::new("Le mie call").size(22.0).strong().color(TEXT));
+            ui.label(theme::strong("Le mie call", 24.0));
             ui.add_space(4.0);
             tabs(ui, p.kind(), &mut act);
             ui.add_space(6.0);
@@ -117,7 +121,7 @@ fn tabs(ui: &mut egui::Ui, current: PeriodKind, act: &mut Option<StatsAction>) {
             let on = k == current;
             let text = RichText::new(name)
                 .size(14.0)
-                .color(if on { INK } else { TEXT });
+                .color(if on { Color32::WHITE } else { TEXT });
             let fill = if on {
                 RED
             } else {
