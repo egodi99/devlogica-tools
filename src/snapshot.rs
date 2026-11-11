@@ -26,6 +26,7 @@ pub fn run_ui(args: &[String]) -> i32 {
     office.handle(crate::net::Packet::CoffeeStart { user: "Marco".into(), in_minutes: Some(5) }, ip, "Emanuele");
     office.handle(crate::net::Packet::CoffeeRsvp { user: "Anna".into(), answer: "yes".into() }, ip, "Emanuele");
     office.handle(crate::net::Packet::CoffeeRsvp { user: "Luca".into(), answer: "no".into() }, ip, "Emanuele");
+    office.handle(crate::net::Packet::CoffeeRsvp { user: "Giulia".into(), answer: crate::office::IN_CALL.into() }, ip, "Emanuele");
     office.peers.insert("Marco".into(), ip);
     office.peers.insert("Anna".into(), ip);
     let mic = vec![
@@ -42,7 +43,7 @@ pub fn run_ui(args: &[String]) -> i32 {
     let ppp = 2.0;
     let (w, h, bg): (f64, f64, _) = match kind.as_str() {
         "call" => (540.0, ui::call_panel_height(3), ui::RED_BG),
-        "caffe" => (420.0, ui::coffee_panel_height(2), ui::COFFEE_BG),
+        "caffe" => (420.0, ui::coffee_panel_height(3), ui::COFFEE_BG),
         "conferma" => (380.0, 140.0, ui::INK),
         _ => (500.0, 900.0, ui::INK),
     };

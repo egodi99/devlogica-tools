@@ -56,6 +56,14 @@ L'icona cambia in base allo stato:
 Dal menu scegli *Pausa caffè* → *Adesso* o *Tra 5, 10 o 15 minuti*. Ai colleghi compare l'invito con i pulsanti per rispondere.
 Chi ha proposto la pausa vede le risposte e la chiude con *Fine pausa caffè*. In ogni caso la pausa si chiude da sola dopo 20 minuti.
 
+### Non disturbare durante la call
+Mentre sei in call (riconosciuta in automatico o avviata a mano) l'app non ti interrompe:
+- niente inviti alla pausa caffè e niente avvisi delle call dei colleghi (né riquadro, né bordo rosso, né suono);
+- l'icona nella barra continua a cambiare colore, se vuoi dare un'occhiata;
+- chi propone il caffè vede *in call* accanto al tuo nome al posto della risposta.
+
+Quando chiudi la call ti arriva quello che è ancora in corso: l'invito alla pausa caffè, se è ancora aperta, e l'avviso dei colleghi ancora in call. Quello che è finito nel frattempo non compare.
+
 ### Sfondi animati
 Si trovano nel menu → *Sfondi animati*, con queste opzioni:
 - attivi o disattivati;

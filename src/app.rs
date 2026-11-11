@@ -239,6 +239,12 @@ impl App {
         let me = self.me();
         let (notices, out) = self.office.handle(p, from, &me);
         self.send_out(out);
+        self.show_notices(notices);
+        self.refresh(el);
+    }
+
+    /// Avvisi nuovi: riapre la finestra e suona. Durante la mia call arrivano già filtrati.
+    fn show_notices(&mut self, notices: Vec<Notice>) {
         for n in notices {
             match n {
                 Notice::CallStarted { user } => {
@@ -254,7 +260,6 @@ impl App {
                 Notice::CallsChanged | Notice::CoffeeChanged => {}
             }
         }
-        self.refresh(el);
     }
 
     // ------------------------------------------------------------------ azioni
@@ -264,6 +269,9 @@ impl App {
         if let Some(p) = self.office.start_my_call(&me, app.clone(), auto) {
             log(format!("Inizio call ({}){}", app.as_deref().unwrap_or("manuale"), if auto { " rilevata in automatico" } else { "" }));
             self.send_all(&p);
+            for p in self.office.enter_dnd(&me) {
+                self.send_all(&p);
+            }
             self.next_alive = Instant::now() + Duration::from_secs(20);
         }
         self.refresh(el);
@@ -273,6 +281,11 @@ impl App {
         if let Some(p) = self.office.end_my_call() {
             log("Fine call");
             self.send_all(&p);
+            let (notices, out) = self.office.leave_dnd(&self.me());
+            for p in out {
+                self.send_all(&p);
+            }
+            self.show_notices(notices);
         }
         self.refresh(el);
     }
@@ -410,6 +423,9 @@ impl App {
         let me = self.me();
         if let Some(p) = self.office.end_my_call() {
             self.send_all(&p);
+            for p in self.office.leave_dnd(&me).1 {
+                self.send_all(&p);
+            }
         }
         if let Some(p) = self.office.end_coffee(&me) {
             self.send_all(&p);
@@ -449,9 +465,11 @@ impl App {
     fn refresh(&mut self, el: &ActiveEventLoop) {
         let others = self.office.others().len();
         let style = self.cfg.alert_style;
-        let want_panel = others > 0 && !self.calls_hidden && style != AlertStyle::Tray;
-        let want_edges = others > 0 && !self.calls_hidden && style == AlertStyle::Full;
-        let want_coffee = self.office.coffee.is_some() && !self.coffee_hidden;
+        // Non disturbare: mentre sono in call niente avvisi dei colleghi (resta solo l'icona).
+        let dnd = self.office.dnd();
+        let want_panel = others > 0 && !self.calls_hidden && !dnd && style != AlertStyle::Tray;
+        let want_edges = others > 0 && !self.calls_hidden && !dnd && style == AlertStyle::Full;
+        let want_coffee = self.office.coffee.as_ref().is_some_and(|c| c.mine || !dnd) && !self.coffee_hidden;
         let want_ask = self.ask.is_some();
         let primary = Self::primary(el);
 

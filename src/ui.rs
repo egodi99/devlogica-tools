@@ -435,10 +435,14 @@ pub fn coffee_panel(ui: &mut egui::Ui, v: &mut View) {
         }
         for (user, answer) in &c.rsvp {
             ui.horizontal(|ui| {
-                let yes = answer == "yes";
-                ui.label(RichText::new(if yes { "✔" } else { "✖" }).color(if yes { GREEN } else { RED }));
+                let (icon, color, text) = match answer.as_str() {
+                    "yes" => ("✔", GREEN, "viene"),
+                    crate::office::IN_CALL => ("📞", MUTED, "in call"),
+                    _ => ("✖", RED, "non può"),
+                };
+                ui.label(RichText::new(icon).color(color));
                 ui.label(RichText::new(user).size(14.0).color(TEXT));
-                ui.label(RichText::new(if yes { "viene" } else { "non può" }).size(12.0).color(MUTED));
+                ui.label(RichText::new(text).size(12.0).color(MUTED));
             });
         }
         ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
