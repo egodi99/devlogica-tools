@@ -5,6 +5,7 @@
 
 mod app;
 mod callstats;
+mod callstore;
 mod config;
 mod detect;
 mod indicators;
